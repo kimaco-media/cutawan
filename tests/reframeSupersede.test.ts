@@ -85,6 +85,16 @@ async function writeManualGaming(clipId: string): Promise<void> {
   })
 }
 
+/** What EditorScreen's Fill (crop) + Manual choice (or the focus slider) persists. */
+async function chooseManualCrop(clipId: string): Promise<void> {
+  await updateProject(PROJECT_ID, (fresh) => {
+    const clip = fresh.clips.find((c) => c.id === clipId)
+    if (clip) Object.assign(clip.edit, { layoutChosen: true, framing: 'manual', reframeMode: 'crop' })
+  })
+}
+
+const analyseCount = (): number => mocks.analyse.mock.calls.length
+
 /** The automatic analysis: never settles until aborted, like a long real run. */
 function hangUntilAborted(): void {
   mocks.analyse.mockImplementation((_path, _clip, _type, _key, _model, _transcript, signal) =>
@@ -109,7 +119,8 @@ beforeAll(async () => {
     video: { path: videoPath, fileName: 'source.mp4', durationSec: 30, width: 1920, height: 1080,
       fps: 30, sizeBytes: 1, hasAudio: true },
     transcript: null,
-    clips: [pendingClip('gaming', 30), pendingClip('mid', 30), pendingClip('late', 30), pendingClip('auto', 30)],
+    clips: [pendingClip('gaming', 30), pendingClip('mid', 30), pendingClip('late', 30), pendingClip('auto', 30),
+      pendingClip('crop', 30), pendingClip('cropmid', 30), pendingClip('cropback', 30)],
     prompt: '',
     videoType: 'auto'
   }
@@ -195,6 +206,57 @@ describe('manual gaming layout versus automatic analysis', () => {
     const clip = project.clips.find((c) => c.id === 'auto')!
     expect(clip.reframeStatus).toBe('done')
     expect(clip.focusTrack).toEqual([{ t: 0, x: .5 }])
+    expect(needsReframe(clip)).toBe(false)
+  })
+
+  it('never analyses an explicitly chosen manual crop, on open or export', async () => {
+    await chooseManualCrop('crop')
+    const before = analyseCount()
+    const project = await ensureClipReframe(PROJECT_ID, 'crop')
+    expect(analyseCount()).toBe(before)
+    const clip = project.clips.find((c) => c.id === 'crop')!
+    expect(clip.reframeStatus).toBe('pending')
+    expect(clip.edit.framing).toBe('manual')
+    expect(exportWaitsForReframe(clip)).toBe(false)
+    // Reopening stays a no-op for the same unchanged manual choice.
+    await ensureClipReframe(PROJECT_ID, 'crop')
+    expect(analyseCount()).toBe(before)
+  })
+
+  it('supersedes an in-flight analysis once the explicit manual crop is saved', async () => {
+    const before = analyseCount()
+    const running = ensureClipReframe(PROJECT_ID, 'cropmid')
+    await vi.waitFor(() => expect(analyseCount()).toBe(before + 1))
+    await chooseManualCrop('cropmid')
+    // What the updateClip handler does once the manual choice is durable.
+    supersedeClipReframe(PROJECT_ID, 'cropmid')
+    const result = await running
+    const clip = result.clips.find((c) => c.id === 'cropmid')!
+    expect(clip.edit.framing).toBe('manual')
+    expect(clip.edit.layoutChosen).toBe(true)
+    expect(needsReframe(clip)).toBe(false)
+    expect(analyseCount()).toBe(before + 1)
+    const again = await ensureClipReframe(PROJECT_ID, 'cropmid')
+    expect(again.clips.find((c) => c.id === 'cropmid')?.edit.framing).toBe('manual')
+    expect(analyseCount()).toBe(before + 1)
+  })
+
+  it('analyses again after switching the same clip back to Automatic', async () => {
+    await chooseManualCrop('cropback')
+    await updateProject(PROJECT_ID, (fresh) => {
+      const clip = fresh.clips.find((c) => c.id === 'cropback')
+      if (clip) Object.assign(clip.edit, { framing: 'auto' })
+    })
+    mocks.analyse.mockImplementationOnce(async (_path, clip: Clip) => {
+      clip.reframeStatus = 'done'
+      clip.reframeAnalysis = { start: clip.edit.start, end: clip.edit.end, version: 2 }
+      clip.focusTrack = [{ t: clip.edit.start, x: .5 }]
+    })
+    const before = analyseCount()
+    const project = await ensureClipReframe(PROJECT_ID, 'cropback')
+    expect(analyseCount()).toBe(before + 1)
+    const clip = project.clips.find((c) => c.id === 'cropback')!
+    expect(clip.reframeStatus).toBe('done')
     expect(needsReframe(clip)).toBe(false)
   })
 })

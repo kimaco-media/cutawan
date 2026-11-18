@@ -5,6 +5,7 @@ import {
   EAGER_REFRAME_SCORE,
   exportWaitsForReframe,
   layoutUntouched,
+  manualCropSupersedesAnalysis,
   manualLayoutSupersedesAnalysis,
   mergeClipSave,
   mergeReframeResult,
@@ -155,6 +156,39 @@ describe('needsReframe', () => {
     expect(exportWaitsForReframe({ ...manual, edit: { ...manual.edit, end: 30 } })).toBe(false)
     expect(exportWaitsForReframe(clip('b', 50))).toBe(true)
     expect(exportWaitsForReframe(clip('c', 50, { reframeStatus: 'done' }))).toBe(true)
+  })
+  it('treats an explicitly chosen manual crop as fully framed, but not the untouched default', () => {
+    // The fixture matches how pending clips are created: manual framing and
+    // crop are the *default* — without layoutChosen the analysis is wanted.
+    const explicit = clip('a', 50)
+    expect(manualCropSupersedesAnalysis(explicit)).toBe(false)
+    expect(needsReframe(explicit)).toBe(true)
+    explicit.edit.layoutChosen = true
+    expect(manualCropSupersedesAnalysis(explicit)).toBe(true)
+    expect(needsReframe(explicit)).toBe(false)
+    expect(exportWaitsForReframe(explicit)).toBe(false)
+    // Trimming, even beyond any analysis coverage, never restarts analysis
+    // for a deliberate manual crop: the crop renders the same either way.
+    explicit.edit.end = 40
+    expect(needsReframe(explicit)).toBe(false)
+    // Switching back to Automatic re-enables analysis for the same clip.
+    explicit.edit.framing = 'auto'
+    expect(needsReframe(explicit)).toBe(true)
+    expect(exportWaitsForReframe(explicit)).toBe(true)
+    // Letterboxing is not the manual static crop; the ordinary rules apply.
+    explicit.edit.framing = 'manual'
+    explicit.edit.reframeMode = 'fit-letterbox'
+    expect(manualCropSupersedesAnalysis(explicit)).toBe(false)
+    expect(needsReframe(explicit)).toBe(true)
+    // A manual composition keeps its own bypass under automatic framing.
+    const composed = clip('b', 50)
+    composed.edit.layoutChosen = true
+    composed.edit.framing = 'auto'
+    composed.visualLayout = { start: 0, end: 30, preserveContext: true, allowZoom: false, reason: 'Manual regions',
+      revision: 1, shots: [{ start: 0, end: 30, mode: 'fit',
+        composition: gamingComposition({ x: .7, y: .03, width: .27, height: .3 }, { x: .01, y: .01, width: .98, height: .98 }) }] }
+    expect(manualCropSupersedesAnalysis(composed)).toBe(false)
+    expect(needsReframe(composed)).toBe(false)
   })
 })
 
