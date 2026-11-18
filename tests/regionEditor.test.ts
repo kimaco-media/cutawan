@@ -41,12 +41,44 @@ describe('visual region editor geometry', () => {
 
   it('drags by the grab offset and stops at every frame edge', () => {
     const region: ContentRegion = { x: .2, y: .3, width: .4, height: .2 }
+    // Grab offset .3/.4 (pointer at .5/.7); moving the pointer to .1/.1 pulls
+    // the top-left to -.2/-.3, clamped to the frame.
     const moved = dragRegion(region, { x: .3, y: .4 }, { x: .1, y: .1 })
     expect(moved).toEqual({ x: 0, y: 0, width: .4, height: .2 })
+    // Pointer to .95/.95 wants the top-left at .75/.65; clamped to the right
+    // and bottom frame edges.
     expect(dragRegion(region, { x: .2, y: .3 }, { x: .95, y: .95 }))
-      .toEqual({ x: .6, y: .8, width: .4, height: .2 })
+      .toEqual({ x: .6, y: .65, width: .4, height: .2 })
     // The size never changes while moving.
     expect(dragRegion(region, { x: .6, y: .5 }, { x: .601, y: .501 }).width).toBe(.4)
+  })
+
+  it('follows the pointer exactly from a nonzero origin, without jump or drift', () => {
+    const region: ContentRegion = { x: .3, y: .25, width: .2, height: .15 }
+    // Pointer-down inside the region at (.35, .3): the grab offset from the
+    // top-left is what the drag captures.
+    const grab = { x: .35 - region.x, y: .3 - region.y }
+    // No movement at all: same pointer position leaves the region untouched.
+    expect(dragRegion(region, grab, { x: .35, y: .3 })).toEqual(region)
+    // The first move lands exactly where the grab point maps — no jump by the
+    // region's own origin, no dependence on how many moves came before.
+    expect(dragRegion(region, grab, { x: .5, y: .4 }))
+      .toEqual({ x: .45, y: .35, width: .2, height: .15 })
+    // A long series of pointer moves tracks without cumulative drift, and
+    // drags while overlapping another region behave identically.
+    const draft = draftFromComposition(gaming)
+    let moved = region
+    for (let i = 0; i < 50; i++) {
+      const pointer = { x: .35 + i * .01, y: .3 - i * .002 }
+      moved = dragRegion(moved, grab, pointer)
+      expect(moved.x).toBeCloseTo(pointer.x - grab.x, 5)
+      expect(moved.y).toBeCloseTo(pointer.y - grab.y, 5)
+      expect(moved.width).toBe(.2)
+      expect(moved.height).toBe(.15)
+      expect(regionAt(draft, { x: moved.x, y: moved.y })).not.toBeNull()
+    }
+    // After the whole series the region sits exactly where the pointer says.
+    expect(moved.x).toBeCloseTo((.35 + 49 * .01) - grab.x, 5)
   })
 
   it('resizes against the opposite edge with frame and minimum-side clamping', () => {

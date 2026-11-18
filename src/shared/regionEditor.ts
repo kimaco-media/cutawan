@@ -50,12 +50,15 @@ export function pointerToSource(
 /** Keep stored coordinates free of float dust (0.1 + 0.2 − 0.3 style). */
 const round = (v: number): number => Math.round(v * 1e6) / 1e6
 
-/** Move the region so `grab` (a point inside it) follows the pointer, inside the frame. */
+/** Move the region so `grab` (the pointer's offset from its top-left at drag
+ * start) follows the pointer, inside the frame. The position is derived from
+ * the pointer and the captured grab offset alone — never accumulated against
+ * the region's own position, which would jump and drift on repeated moves. */
 export function dragRegion(
   region: ContentRegion, grab: { x: number; y: number }, point: { x: number; y: number }
 ): ContentRegion {
-  const x = round(Math.max(0, Math.min(1 - region.width, region.x + point.x - grab.x)))
-  const y = round(Math.max(0, Math.min(1 - region.height, region.y + point.y - grab.y)))
+  const x = round(Math.max(0, Math.min(1 - region.width, point.x - grab.x)))
+  const y = round(Math.max(0, Math.min(1 - region.height, point.y - grab.y)))
   return { x, y, width: region.width, height: region.height }
 }
 
@@ -86,7 +89,7 @@ export function resizeRegion(
 export function nudgeRegion(
   region: ContentRegion, dx: number, dy: number
 ): ContentRegion {
-  return dragRegion(region, { x: region.x, y: region.y }, { x: region.x + dx, y: region.y + dy })
+  return dragRegion(region, { x: 0, y: 0 }, { x: region.x + dx, y: region.y + dy })
 }
 
 /** Smallest region containing the point — the top one to grab when they overlap. */

@@ -9,7 +9,7 @@ import {
   rebuildGaming,
   GAMING_SPLITS
 } from '@shared/composition'
-import { compositionHidesTitle, layoutReviewMessage, layoutShotAt, validLayoutShots } from '@shared/contentType'
+import { compositionHidesTitle, effectiveComposition, layoutReviewMessage, layoutShotAt, validLayoutShots } from '@shared/contentType'
 import RegionEditor from './RegionEditor'
 import { usePreviewBus } from '../lib/previewBus'
 import { useStore } from '../store'
@@ -34,7 +34,12 @@ export default function CompositionControls({ clip, source }: { clip: Clip; sour
   const splitsOn = clip.edit.speakerSplit !== false
   const issue = layoutReviewMessage(clip)
   const active = clip.edit.aspect === '9:16' && clip.edit.framing === 'auto' && clip.edit.reframeMode === 'crop'
-  const composition = active ? shot?.composition : undefined
+  // The composition the preview and export actually render — the stored shot
+  // composition with the clip's explicit preference applied. Editing, split
+  // buttons and warnings must follow this, not the stored preset, or a
+  // content-first shot with Gaming selected would open the editor as
+  // "Presenter + Content" and enforce the wrong overlap rule.
+  const composition = active ? effectiveComposition(shot, clip) : undefined
   const facecam = composition?.layers.find(l => l.role === 'presenter')
   const gameplay = composition?.layers.find(l => l.role === 'content')
   // The presenter presets need disjoint source regions; gaming deliberately
@@ -112,8 +117,8 @@ export default function CompositionControls({ clip, source }: { clip: Clip; sour
         {warning && <p className="text-[11px] leading-relaxed text-amber-300">{warning}</p>}
       </div>}
       {compositionHidesTitle(clip) && clip.edit.showTitle && <p className="text-[11px] text-zinc-500">The hook title is hidden to keep the presenter clear.</p>}
-      {active && isPresenterComposition(shot?.composition) && <RegionForm key={`${shot!.start}:${JSON.stringify(shot!.composition)}`}
-        clip={clip} source={source} composition={shot!.composition!} onSave={saveRegions} />}
+      {active && isPresenterComposition(composition) && shot && <RegionForm key={`${shot.start}:${JSON.stringify(composition)}`}
+        clip={clip} source={source} composition={composition!} onSave={saveRegions} />}
     </>}
     {clip.edit.aspect === '9:16' &&
       // No composition to adjust yet, or one without a facecam source the

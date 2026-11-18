@@ -1,4 +1,4 @@
-import type { Clip, ClipContentType, ClipEditState, LayoutShot, VideoType } from './types'
+import type { Clip, ClipContentType, ClipEditState, Composition, LayoutShot, VideoType } from './types'
 import { DETAIL_CAPTION_Y, validContentRegion, type CaptionPositionRange } from './contentRegion'
 import { gamingComposition, isPresenterComposition, presenterComposition, validComposition } from './composition'
 
@@ -123,6 +123,33 @@ export function protectLayoutRanges(
 }
 
 /** Manual framing and layout choices always override automatic shot composition. */
+/**
+ * The composition a shot renders with once the clip's explicit
+ * compositionPreference is applied — the same switch automaticLayoutShots
+ * performs for the preview and the export. The stored shot keeps its own
+ * preset; UI editing must use this effective composition so the region
+ * editor edits the layout the user actually sees (e.g. a stored
+ * content-first shot with Gaming selected opens as Gaming).
+ */
+export function effectiveComposition(
+  shot: Pick<LayoutShot, 'composition'> | undefined,
+  clip: Pick<Clip, 'edit'>
+): Composition | undefined {
+  const composition = shot?.composition
+  if (!composition || !isPresenterComposition(composition)) return composition
+  const preference = clip.edit.compositionPreference
+  if (!preference || preference === 'auto' || preference === composition.preset) return composition
+  const content = composition.layers.find(l => l.role === 'content')!
+  const presenter = composition.layers.find(l => l.role === 'presenter')
+  if (!presenter) return composition
+  // A switch the saved regions cannot represent (e.g. gaming regions that
+  // overlap) keeps the composition the user can actually see.
+  const rebuilt = preference === 'gaming'
+    ? gamingComposition(presenter.source, content.source)
+    : presenterComposition(content.source, presenter.source, preference)
+  return rebuilt ?? composition
+}
+
 export function automaticLayoutShots(clip: Pick<Clip, 'edit' | 'visualLayout'>): NonNullable<NonNullable<Clip['visualLayout']>['shots']> {
   if (clip.edit.framing !== 'auto' || clip.edit.reframeMode !== 'crop' || clip.edit.aspect === 'original') return []
   if (!validLayoutShots(clip.visualLayout, clip.edit.start, clip.edit.end)) {
@@ -137,19 +164,7 @@ export function automaticLayoutShots(clip: Pick<Clip, 'edit' | 'visualLayout'>):
     }
     let composition = shot.composition
     if (composition && clip.edit.aspect !== '9:16') return { ...shot, composition: undefined }
-    const preference = clip.edit.compositionPreference
-    if (composition && isPresenterComposition(composition) && preference && preference !== 'auto' && preference !== composition.preset) {
-      const content = composition.layers.find(l => l.role === 'content')!
-      const presenter = composition.layers.find(l => l.role === 'presenter')
-      if (presenter) {
-        // A switch the saved regions cannot represent (e.g. gaming regions that
-        // overlap) keeps the composition the user can actually see.
-        const rebuilt = preference === 'gaming'
-          ? gamingComposition(presenter.source, content.source)
-          : presenterComposition(content.source, presenter.source, preference)
-        if (rebuilt) composition = rebuilt
-      }
-    }
+    composition = effectiveComposition(shot, clip)
     const planned = composition === shot.composition ? shot : { ...shot, composition,
       review: { status: 'needs-review' as const, reason: 'Layout changed; check the preview before exporting.' } }
     if ((!shot.region && !composition) || shot.mode !== 'fit') return planned
