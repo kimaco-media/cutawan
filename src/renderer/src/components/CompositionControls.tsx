@@ -114,7 +114,13 @@ export default function CompositionControls({ clip, source }: { clip: Clip; sour
       {active && isPresenterComposition(shot?.composition) && <RegionForm key={`${shot!.start}:${JSON.stringify(shot!.composition)}`}
         composition={shot!.composition!} onSave={saveRegions} />}
     </>}
-    {clip.edit.aspect === '9:16' && !shot?.composition && <div className="space-y-1">
+    {clip.edit.aspect === '9:16' &&
+      // No composition to adjust yet, or one without a facecam source the
+      // Gaming preset could reuse (content-only, speaker splits): the manual
+      // region entry is the only path to Gaming there, so keep it available
+      // even when preference buttons are disabled for the same reason.
+      (!shot?.composition || !shot.composition.layers.some(l => l.role === 'presenter')) &&
+      <div className="space-y-1">
       <div className="grid grid-cols-2 gap-1.5">
         <button type="button"
           onClick={() => setAdding(adding === 'presenter' ? null : 'presenter')}
