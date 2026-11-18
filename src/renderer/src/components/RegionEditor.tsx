@@ -6,6 +6,7 @@ import {
   draftComposition,
   draftFromComposition,
   dragRegion,
+  initialSelectedRole,
   nudgeRegion,
   pointerToSource,
   resizeRegion,
@@ -60,7 +61,7 @@ export default function RegionEditor({
     gaming ? (role === 'presenter' ? 'Facecam' : 'Gameplay') : (role === 'presenter' ? 'Presenter' : 'Content')
   const busTime = usePreviewBus(s => s.time)
   const [draft, setDraft] = useState<RegionDraft>(() => draftFromComposition(composition))
-  const [selected, setSelected] = useState<Role>('presenter')
+  const [selected, setSelected] = useState<Role>(() => initialSelectedRole(composition))
   const [hidden, setHidden] = useState<ReadonlySet<Role>>(new Set())
   const [advanced, setAdvanced] = useState(false)
   const [frameTime, setFrameTime] = useState(() =>
@@ -127,7 +128,8 @@ export default function RegionEditor({
     if (video && Math.abs(video.currentTime - frameTime) > .01) video.currentTime = frameTime
   }, [frameTime])
 
-  // Escape cancels (nothing is saved); arrows nudge the selected rectangle.
+  // Escape cancels (nothing is saved); arrows nudge the selected rectangle —
+  // but never steal them from focused form fields and the scrub slider.
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (event.key === 'Escape') {
@@ -141,6 +143,9 @@ export default function RegionEditor({
       }
       const delta = deltas[event.key]
       if (!delta) return
+      const target = event.target
+      if (target instanceof HTMLElement && (target.isContentEditable ||
+        ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))) return
       event.preventDefault()
       const role = hidden.has(selected) ? (selected === 'presenter' ? 'content' : 'presenter') : selected
       setDraft(current => ({ ...current, [role]: nudgeRegion(current[role], delta[0], delta[1]) }))

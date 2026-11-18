@@ -6,21 +6,27 @@ import { compositionPixels } from '@shared/composition'
 
 /**
  * Draw a composition's strips onto a canvas using the exact export geometry
- * (compositionPixels), scaled to whatever canvas size the caller has. Shared
- * by the editor preview and the visual region editor's live mini preview.
- * Returns false when the video or composition is not drawable yet.
+ * (compositionPixels). Shared by the editor preview and the visual region
+ * editor's live mini preview. `size` is the CSS size the canvas will occupy;
+ * it defaults to the canvas's own client rect, but the editor preview passes
+ * the video's rect so the canvas can still be hidden while it is drawn — a
+ * canvas with display:none reports clientWidth 0. Returns false when the
+ * video or composition is not drawable yet.
  */
 export function drawCompositionFrame(
-  canvas: HTMLCanvasElement, video: HTMLVideoElement, composition: Composition
+  canvas: HTMLCanvasElement, video: HTMLVideoElement, composition: Composition,
+  size?: { width: number; height: number }
 ): boolean {
-  if (video.readyState < 2 || video.videoWidth <= 0 || canvas.clientWidth <= 0) return false
+  if (video.readyState < 2 || video.videoWidth <= 0) return false
+  const css = size ?? { width: canvas.clientWidth, height: canvas.clientHeight }
+  if (Math.min(css.width, css.height) < 2) return false
   const context = canvas.getContext('2d')
   if (!context) return false
   const pixels = compositionPixels(composition, { width: video.videoWidth, height: video.videoHeight }, 1080, 1920)
   if (!pixels.length) return false
   const ratio = Math.min(window.devicePixelRatio || 1, 2)
-  const width = Math.max(2, Math.round(canvas.clientWidth * ratio))
-  const height = Math.max(2, Math.round(canvas.clientHeight * ratio))
+  const width = Math.max(2, Math.round(css.width * ratio))
+  const height = Math.max(2, Math.round(css.height * ratio))
   if (canvas.width !== width) canvas.width = width
   if (canvas.height !== height) canvas.height = height
   context.setTransform(width / 1080, 0, 0, height / 1920, 0, 0)
@@ -43,8 +49,11 @@ export function applyPreviewVideoFrame(
   const composition = plan.isCrop ? plan.fitRanges?.find(r => t >= r.start && t < r.end)?.composition : undefined
   video.style.visibility = 'visible'
   if (composition && overview && video.readyState >= 2 && video.videoWidth > 0 && video.clientWidth > 0) {
-    // Use export geometry even on a small preview; only the final canvas is scaled.
-    if (drawCompositionFrame(overview, video, composition)) {
+    // Use export geometry even on a small preview; only the final canvas is
+    // scaled. The canvas is sized from the video's rect, so it can still be
+    // hidden here — it is shown only once something has been drawn.
+    if (drawCompositionFrame(overview, video, composition,
+      { width: video.clientWidth, height: video.clientHeight })) {
       overview.style.height = `${video.clientHeight}px`
       overview.style.display = 'block'
       video.style.visibility = 'hidden'

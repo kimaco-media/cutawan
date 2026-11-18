@@ -99,6 +99,11 @@ export function regionAt(draft: RegionDraft, point: { x: number; y: number }): '
   return hits[0] ?? null
 }
 
+/** The rectangle the editor selects first: the facecam when the composition has one. */
+export function initialSelectedRole(composition: Composition): 'presenter' | 'content' {
+  return composition.layers.some(l => l.role === 'presenter') ? 'presenter' : 'content'
+}
+
 /**
  * Specific bounds feedback for hand-typed values (the visual editor clamps
  * instead): names the region, the edge and the constraint that failed.

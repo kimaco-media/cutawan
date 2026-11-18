@@ -12,6 +12,7 @@ import {
   draftComposition,
   draftFromComposition,
   dragRegion,
+  initialSelectedRole,
   nudgeRegion,
   pointerToSource,
   regionAt,
@@ -149,6 +150,10 @@ describe('draft validation and composition building', () => {
     const contentOnly = presenterComposition({ x: .05, y: .2, width: .9, height: .7 },
       { x: .82, y: .02, width: .16, height: .28 }, 'content-only')!
     expect(contentOnly.layers).toHaveLength(1)
+    // The editor starts on a rectangle that actually exists.
+    expect(initialSelectedRole(gaming)).toBe('presenter')
+    expect(initialSelectedRole(stacked)).toBe('presenter')
+    expect(initialSelectedRole(contentOnly)).toBe('content')
     const draft = draftFromComposition(contentOnly)
     expect(draft.content).toEqual({ x: .05, y: .2, width: .9, height: .7 })
     // The unused presenter rectangle (a hidden default, overlapping here)
