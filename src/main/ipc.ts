@@ -15,7 +15,7 @@ import type {
 } from '@shared/types'
 import { VIDEO_EXTENSIONS } from '@shared/video'
 import { sizeTargetBytesFromMb } from '@shared/uploadBudget'
-import { exportWaitsForReframe, manualLayoutSupersedesAnalysis, mergeClipSave, needsReframe } from '@shared/reframe'
+import { exportWaitsForReframe, mergeClipSave, needsReframe, userChoiceSupersedesAnalysis } from '@shared/reframe'
 import { analyzeProject, createProject, createProjectFromUrl } from './pipeline'
 import { captionWholeVideo } from './pipeline/wholeVideo'
 import { downloadGpuFfmpeg } from './pipeline/encoders'
@@ -198,10 +198,11 @@ export function registerIpcHandlers(): void {
       const merged = mergeClipSave(clip, saved, project.videoType)
       project.clips[idx] = merged
       // A hand-configured layout (manual source regions, a gaming
-      // composition) replaces anything an in-flight automatic analysis could
-      // still contribute: cancel it once the manual choice is durable, so an
-      // export never waits on work the clip no longer needs.
-      superseded = manualLayoutSupersedesAnalysis(merged)
+      // composition, an explicitly chosen manual crop) replaces anything an
+      // in-flight automatic analysis could still contribute: cancel it once
+      // the manual choice is durable, so an export never waits on work the
+      // clip no longer needs.
+      superseded = userChoiceSupersedesAnalysis(merged)
     })
     if (superseded) supersedeClipReframe(projectId, clip.id)
     return updated
