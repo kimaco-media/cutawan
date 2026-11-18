@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import type { Clip, ContentRegion } from '@shared/types'
-import { compositionPixels, presenterComposition, usefulComposition, validComposition } from '@shared/composition'
-import { automaticLayoutShots, compositionHidesTitle, detailCaptionRanges, layoutReviewMessage, layoutShotAt, protectLayoutRanges, validLayoutShots } from '@shared/contentType'
+import type { Clip, ContentRegion, LayoutShot } from '@shared/types'
+import { compositionPixels, gamingComposition, presenterComposition, speakerComposition, usefulComposition, validComposition } from '@shared/composition'
+import { automaticLayoutShots, compositionHidesTitle, detailCaptionRanges, effectiveComposition, layoutReviewMessage, layoutShotAt, protectLayoutRanges, validLayoutShots } from '@shared/contentType'
 import { mergeClipSave, mergeReframeResult, userClipEdit } from '@shared/reframe'
 
 const content = { x: .2, y: .3, width: .6, height: .6 }
@@ -65,6 +65,40 @@ describe('independent presenter/content composition', () => {
     c.edit.framing = 'manual'
     expect(automaticLayoutShots(c)).toEqual([])
     expect(compositionHidesTitle(c)).toBe(false)
+  })
+
+  it('edits the effective composition the preview renders, not the stored preset', () => {
+    const stored = presenterComposition(content, presenter)!
+    const shot: LayoutShot = { start: 10, end: 20, mode: 'fit', composition: stored }
+    const base = { ...clip().edit }
+    // A stored content-first shot with Gaming selected opens as Gaming —
+    // the same composition the preview and export render.
+    const gaming = effectiveComposition(shot, { edit: { ...base, compositionPreference: 'gaming' } })!
+    expect(gaming.preset).toBe('gaming')
+    expect(gaming.layers.find(l => l.role === 'content')!.source).toEqual(content)
+    expect(gaming.layers.find(l => l.role === 'presenter')!.source).toEqual(presenter)
+    // Stacked rebuilds like automaticLayoutShots does.
+    expect(effectiveComposition(shot, { edit: { ...base, compositionPreference: 'stacked' } })!.preset).toBe('stacked')
+    // No preference, 'auto' or the stored preset keeps the stored composition.
+    expect(effectiveComposition(shot, { edit: base })).toBe(stored)
+    expect(effectiveComposition(shot, { edit: { ...base, compositionPreference: 'auto' } })).toBe(stored)
+    expect(effectiveComposition(shot, { edit: { ...base, compositionPreference: 'content-first' } })).toBe(stored)
+    // Speaker splits are not presenter compositions; they are never switched.
+    const speakers = speakerComposition({ x: 0, y: 0, width: 1, height: .5 },
+      { x: 0, y: .5, width: 1, height: .5 })!
+    expect(effectiveComposition({ ...shot, composition: speakers },
+      { edit: { ...base, compositionPreference: 'gaming' } })).toBe(speakers)
+    // A content-only composition has no facecam layer to switch away from.
+    const contentOnly = presenterComposition(content, presenter, 'content-only')!
+    expect(effectiveComposition({ ...shot, composition: contentOnly },
+      { edit: { ...base, compositionPreference: 'gaming' } })).toBe(contentOnly)
+    // Overlapping gaming regions cannot become a presenter preset: the user
+    // keeps the layout they can actually see.
+    const overlapping = gamingComposition({ x: .4, y: .1, width: .2, height: .3 },
+      { x: .05, y: .05, width: .9, height: .9 })!
+    expect(effectiveComposition({ ...shot, composition: overlapping },
+      { edit: { ...base, compositionPreference: 'stacked' } })).toBe(overlapping)
+    expect(effectiveComposition(undefined, { edit: base })).toBeUndefined()
   })
 
   it('preserves a manual region correction across save and late background analysis', () => {

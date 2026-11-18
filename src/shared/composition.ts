@@ -128,8 +128,11 @@ export function presenterComposition(
   content: ContentRegion, presenter: ContentRegion,
   preset: 'content-first' | 'stacked' | 'content-only' = 'content-first'
 ): Composition | undefined {
+  // Content-only renders the content layer alone, so its (unused) presenter
+  // rectangle has no business failing the disjointness rule.
   if (!validRectangle(content) || !validRectangle(presenter) ||
-    intersection(content, presenter) > presenter.width * presenter.height * .15) return undefined
+    (preset !== 'content-only' &&
+      intersection(content, presenter) > presenter.width * presenter.height * .15)) return undefined
   const layers: Composition['layers'] = [{ role: 'content', source: content,
     target: preset === 'content-only' ? { x: .04, y: .08, width: .92, height: .66 } :
       { x: .04, y: .29, width: .92, height: .46 } }]
