@@ -6,6 +6,7 @@ import {
   gamingComposition,
   gamingSplit,
   presenterComposition,
+  rebuildGaming,
   usefulComposition,
   validComposition
 } from '@shared/composition'
@@ -115,6 +116,26 @@ describe('gaming composition', () => {
     const tiny = gamingComposition({ x: .8, y: .05, width: .08, height: .09 }, gameplay)!
     expect(compositionIssue(tiny, source)).toMatch(/soft/)
     expect(compositionIssue(tiny, source)).toMatch(/facecam/i)
+  })
+
+  it('keeps the chosen split, caption anchor and focus when regions are adjusted', () => {
+    const c = gamingComposition(facecam, gameplay, .35)!
+    c.layers[0].focus = { x: .5, y: .25 }
+    c.layers[1].focus = { x: .8, y: .5 }
+    // What the region form does after the user moves the facecam bounds:
+    // the split and caption position of the edited layout must survive.
+    const updated = rebuildGaming({ x: .6, y: .05, width: .3, height: .25 }, gameplay,
+      { split: gamingSplit(c), presenterFocus: c.layers[0].focus, contentFocus: c.layers[1].focus })
+    expect(gamingSplit(updated!)).toBe(.35)
+    expect(updated!.captionY).toBeCloseTo(c.captionY, 10)
+    expect(updated!.layers[0].focus).toEqual({ x: .5, y: .25 })
+    expect(updated!.layers[1].focus).toEqual({ x: .8, y: .5 })
+    expect(validComposition(updated!)).toBe(true)
+    // A split change through the split buttons keeps the focus of both panels.
+    const resplit = rebuildGaming(facecam, gameplay, { split: .25, presenterFocus: c.layers[0].focus })
+    expect(gamingSplit(resplit!)).toBe(.25)
+    expect(resplit!.layers[0].focus).toEqual({ x: .5, y: .25 })
+    expect(resplit!.layers[1].focus).toBeUndefined()
   })
 
   it('switches layouts through the composition preference in both directions', () => {

@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import type { Clip, Composition, ContentRegion, VideoInfo } from '@shared/types'
+import type { Clip, Composition, ContentRegion, RegionFocus, VideoInfo } from '@shared/types'
 import {
   compositionIssue,
   gamingComposition,
   gamingSplit,
   isPresenterComposition,
   presenterComposition,
+  rebuildGaming,
   GAMING_SPLITS
 } from '@shared/composition'
 import { compositionHidesTitle, layoutReviewMessage, layoutShotAt, validLayoutShots } from '@shared/contentType'
@@ -57,11 +58,9 @@ export default function CompositionControls({ clip, source }: { clip: Clip; sour
   }
   const changeSplit = (split: number): void => {
     if (!composition || !facecam || !gameplay) return
-    const rebuilt = gamingComposition(facecam.source, gameplay.source, split)
-    if (!rebuilt) return
-    if (facecam.focus) rebuilt.layers[0].focus = facecam.focus
-    if (gameplay.focus) rebuilt.layers[1].focus = gameplay.focus
-    saveRegions(rebuilt)
+    const rebuilt = rebuildGaming(facecam.source, gameplay.source,
+      { split, presenterFocus: facecam.focus, contentFocus: gameplay.focus })
+    if (rebuilt) saveRegions(rebuilt)
   }
   return <div className="mt-3 space-y-2">
     {issue && <p className="text-xs text-amber-300">Review layout: {issue}</p>}
@@ -154,11 +153,14 @@ function RegionForm({ composition, onSave, open }: { composition: Composition; o
       }))
       let updated: Composition | undefined
       if (gaming) {
-        updated = gamingComposition(regions.presenter, regions.content)
-        if (updated) for (const layer of updated.layers) {
-          const value = (field: string): number => Number(values.get(`${layer.role}-focus-${field}`)) / 100
-          layer.focus = { x: value('x'), y: value('y') }
-        }
+        const focus = (role: string): RegionFocus => ({
+          x: Number(values.get(`${role}-focus-x`)) / 100,
+          y: Number(values.get(`${role}-focus-y`)) / 100
+        })
+        // The edited composition's split survives a region or focus change,
+        // so a chosen 25/75 or 35/65 layout is not silently reverted.
+        updated = rebuildGaming(regions.presenter, regions.content,
+          { split: gamingSplit(composition), presenterFocus: focus('presenter'), contentFocus: focus('content') })
       } else {
         updated = regions.presenter && presenterComposition(regions.content, regions.presenter, preset)
       }

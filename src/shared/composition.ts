@@ -107,6 +107,22 @@ export function gamingComposition(
       { role: 'content', source: content, target: { x: 0, y: split, width: 1, height: 1 - split } }] }
 }
 
+/**
+ * Rebuild a gaming composition after an edit (regions or split) while keeping
+ * what the edit did not touch: the split — and with it the caption anchor —
+ * survives a region adjustment, and per-panel focus survives a split change.
+ */
+export function rebuildGaming(
+  presenter: ContentRegion, content: ContentRegion,
+  keep: { split?: number; presenterFocus?: RegionFocus; contentFocus?: RegionFocus } = {}
+): Composition | undefined {
+  const rebuilt = gamingComposition(presenter, content, keep.split ?? DEFAULT_GAMING_SPLIT)
+  if (!rebuilt) return undefined
+  if (keep.presenterFocus) rebuilt.layers[0].focus = keep.presenterFocus
+  if (keep.contentFocus) rebuilt.layers[1].focus = keep.contentFocus
+  return rebuilt
+}
+
 /** The source rectangles are independent of the source webcam's corner. */
 export function presenterComposition(
   content: ContentRegion, presenter: ContentRegion,
