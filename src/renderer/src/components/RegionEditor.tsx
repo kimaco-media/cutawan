@@ -8,6 +8,7 @@ import {
   dragRegion,
   initialSelectedRole,
   nudgeRegion,
+  parsePercent,
   pointerToSource,
   resizeRegion,
   RESIZE_HANDLES,
@@ -343,8 +344,10 @@ function PercentField({
       }}
       onChange={event => {
         setText(event.target.value)
-        const parsed = Number(event.target.value)
-        if (Number.isFinite(parsed)) onCommit(parsed / 100)
+        // A cleared or half-typed field commits nothing; the draft keeps the
+        // last valid value instead of snapping the region to 0.
+        const parsed = parsePercent(event.target.value)
+        if (parsed !== undefined) onCommit(parsed)
       }}
       className="mt-1 w-full rounded border border-surface-600 bg-surface-850 p-1 text-xs text-zinc-200" />
   </label>

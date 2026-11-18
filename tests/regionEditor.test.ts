@@ -14,6 +14,7 @@ import {
   dragRegion,
   initialSelectedRole,
   nudgeRegion,
+  parsePercent,
   pointerToSource,
   regionAt,
   regionBoundsIssue,
@@ -110,6 +111,17 @@ describe('visual region editor geometry', () => {
     expect(regionAt(draft, { x: .8, y: .1 })).toBe('presenter')
     expect(regionAt(draft, { x: .5, y: .9 })).toBe('content')
     expect(regionAt(draft, { x: .995, y: .995 })).toBeNull()
+  })
+
+  it('commits nothing while a percentage field is cleared or half-typed', () => {
+    // Number('') is 0, not NaN — clearing a field must not snap a region to 0.
+    expect(parsePercent('')).toBeUndefined()
+    expect(parsePercent('   ')).toBeUndefined()
+    expect(parsePercent('abc')).toBeUndefined()
+    expect(parsePercent('-')).toBeUndefined()
+    expect(parsePercent('0')).toBe(0)
+    expect(parsePercent('3.5')).toBeCloseTo(.035, 10)
+    expect(parsePercent(' 41 ')).toBeCloseTo(.41, 10)
   })
 
   it('reports specific bounds problems for hand-typed values', () => {

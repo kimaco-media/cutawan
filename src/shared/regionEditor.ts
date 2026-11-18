@@ -11,6 +11,18 @@ import { presenterComposition, rebuildGaming, validComposition } from './composi
 /** Matches validRectangle's floor: regions cannot be thinner than 2% per side. */
 export const MIN_REGION_SIDE = .02
 
+/**
+ * Parse an advanced percentage field's text into a normalized value.
+ * Empty or unparseable text commits nothing — clearing a field to retype it
+ * must not snap the region to 0 (Number('') is 0, not NaN).
+ */
+export function parsePercent(text: string): number | undefined {
+  const trimmed = text.trim()
+  if (trimmed === '') return undefined
+  const parsed = Number(trimmed)
+  return Number.isFinite(parsed) ? parsed / 100 : undefined
+}
+
 export type ResizeHandle = 'nw' | 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w'
 export const RESIZE_HANDLES: ResizeHandle[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 
