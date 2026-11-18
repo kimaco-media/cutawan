@@ -1,6 +1,6 @@
 import type { Clip, ClipContentType, ClipEditState, LayoutShot, VideoType } from './types'
 import { DETAIL_CAPTION_Y, validContentRegion, type CaptionPositionRange } from './contentRegion'
-import { isPresenterComposition, presenterComposition, validComposition } from './composition'
+import { gamingComposition, isPresenterComposition, presenterComposition, validComposition } from './composition'
 
 /** Face coverage below this is treated as a screencast / demo / slides clip. */
 export const SCREENCAST_FACE_COVERAGE = 0.25
@@ -141,7 +141,14 @@ export function automaticLayoutShots(clip: Pick<Clip, 'edit' | 'visualLayout'>):
     if (composition && isPresenterComposition(composition) && preference && preference !== 'auto' && preference !== composition.preset) {
       const content = composition.layers.find(l => l.role === 'content')!
       const presenter = composition.layers.find(l => l.role === 'presenter')
-      if (presenter) composition = presenterComposition(content.source, presenter.source, preference)
+      if (presenter) {
+        // A switch the saved regions cannot represent (e.g. gaming regions that
+        // overlap) keeps the composition the user can actually see.
+        const rebuilt = preference === 'gaming'
+          ? gamingComposition(presenter.source, content.source)
+          : presenterComposition(content.source, presenter.source, preference)
+        if (rebuilt) composition = rebuilt
+      }
     }
     const planned = composition === shot.composition ? shot : { ...shot, composition,
       review: { status: 'needs-review' as const, reason: 'Layout changed; check the preview before exporting.' } }

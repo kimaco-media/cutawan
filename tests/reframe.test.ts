@@ -3,12 +3,15 @@ import {
   EAGER_REFRAME_MAX,
   EAGER_REFRAME_MIN,
   EAGER_REFRAME_SCORE,
+  exportWaitsForReframe,
   layoutUntouched,
+  manualLayoutSupersedesAnalysis,
   mergeClipSave,
   mergeReframeResult,
   needsReframe,
   selectEagerReframeIds
 } from '@shared/reframe'
+import { gamingComposition } from '@shared/composition'
 import type { Clip } from '@shared/types'
 
 function clip(id: string, score: number, overrides: Partial<Clip> = {}): Clip {
@@ -125,6 +128,33 @@ describe('needsReframe', () => {
     // Older projects never carried the field; loadProject fills 'done' in,
     // but a bare clip object must still read as analysed.
     expect(needsReframe(clip('a', 50, { reframeStatus: undefined }))).toBe(false)
+  })
+  it('treats a revision-protected manual layout covering the trim as fully framed', () => {
+    const manual = clip('a', 50)
+    manual.edit.framing = 'auto'
+    manual.visualLayout = { start: 0, end: 30, preserveContext: true, allowZoom: false, reason: 'Manual regions',
+      revision: 1, shots: [{ start: 0, end: 30, mode: 'fit',
+        composition: gamingComposition({ x: .7, y: .03, width: .27, height: .3 }, { x: .01, y: .01, width: .98, height: .98 }) }] }
+    expect(manualLayoutSupersedesAnalysis(manual)).toBe(true)
+    // Even a pending status must not run analysis the user's layout replaces.
+    expect(needsReframe(manual)).toBe(false)
+    manual.reframeStatus = 'pending'
+    expect(needsReframe(manual)).toBe(false)
+    // The manual layout only covers its trim; beyond it, analysis is back.
+    manual.edit.end = 40
+    expect(needsReframe(manual)).toBe(true)
+    // Without the revision the layout is automatic and still needs analysis.
+    const automatic = { ...manual, edit: { ...manual.edit, end: 30 }, visualLayout: { ...manual.visualLayout!, revision: 0 } }
+    expect(needsReframe(automatic)).toBe(true)
+    // Manual framing or letterboxing does not use the saved shots.
+    for (const edit of [{ framing: 'manual' as const }, { reframeMode: 'fit-letterbox' as const }]) {
+      expect(manualLayoutSupersedesAnalysis({ ...manual, edit: { ...manual.edit, end: 30, ...edit } })).toBe(false)
+    }
+    // Exports render manual layouts as saved; everything else keeps waiting
+    // for analysis (or an in-flight retry) exactly as before.
+    expect(exportWaitsForReframe({ ...manual, edit: { ...manual.edit, end: 30 } })).toBe(false)
+    expect(exportWaitsForReframe(clip('b', 50))).toBe(true)
+    expect(exportWaitsForReframe(clip('c', 50, { reframeStatus: 'done' }))).toBe(true)
   })
 })
 

@@ -111,7 +111,7 @@ export interface ClipEditState {
   reframeMode: ReframeMode
   framing: FramingMode
   /** A user choice; automatic analysis must not overwrite it. */
-  compositionPreference?: 'auto' | 'content-first' | 'stacked' | 'content-only'
+  compositionPreference?: 'auto' | 'content-first' | 'stacked' | 'content-only' | 'gaming'
   /** False turns detected two-person split-screen ranges back into speaker crops. */
   speakerSplit?: boolean
   /** Source ranges the user cut out (always removed, ripple-closed). */
@@ -225,12 +225,18 @@ export interface Clip {
 /** Normalized source rectangle; fit it intact instead of discarding its edges. */
 export interface ContentRegion { x: number; y: number; width: number; height: number }
 
+/** Which part of a source region a cover crop keeps: 0..1 along each axis. */
+export interface RegionFocus { x: number; y: number }
+
 /** Independent crops of one source frame, rendered on one playback clock. */
 export interface Composition {
   version: 1
-  /** `speakers`: two people from one wide shot, stacked, during a quick exchange. */
-  preset: 'content-first' | 'stacked' | 'content-only' | 'speakers'
-  layers: Array<{ role: 'content' | 'presenter' | 'speaker'; source: ContentRegion; target: ContentRegion }>
+  /**
+   * `speakers`: two people from one wide shot, stacked, during a quick exchange.
+   * `gaming`: facecam and gameplay strips stacked full-bleed (cover crops).
+   */
+  preset: 'content-first' | 'stacked' | 'content-only' | 'speakers' | 'gaming'
+  layers: Array<{ role: 'content' | 'presenter' | 'speaker'; source: ContentRegion; target: ContentRegion; focus?: RegionFocus }>
   captionY: number
 }
 

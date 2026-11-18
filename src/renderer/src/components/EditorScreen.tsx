@@ -237,7 +237,7 @@ export default function EditorScreen(): React.JSX.Element {
               </button>
             ))}
           </div>
-          <CompositionControls clip={clip} />
+          <CompositionControls clip={clip} source={project.video} />
           {!cropDisabled && (
             <>
               <div className="mt-3 grid grid-cols-3 gap-1.5">

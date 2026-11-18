@@ -15,14 +15,14 @@ import type {
 } from '@shared/types'
 import { VIDEO_EXTENSIONS } from '@shared/video'
 import { sizeTargetBytesFromMb } from '@shared/uploadBudget'
-import { mergeClipSave, needsReframe } from '@shared/reframe'
+import { exportWaitsForReframe, manualLayoutSupersedesAnalysis, mergeClipSave, needsReframe } from '@shared/reframe'
 import { analyzeProject, createProject, createProjectFromUrl } from './pipeline'
 import { captionWholeVideo } from './pipeline/wholeVideo'
 import { downloadGpuFfmpeg } from './pipeline/encoders'
 import { probeVideo } from './pipeline/ffmpeg'
 import { getTimeline } from './pipeline/timeline'
 import { renderClip } from './pipeline/render'
-import { ensureClipReframe } from './pipeline/reframe'
+import { ensureClipReframe, supersedeClipReframe } from './pipeline/reframe'
 import { cancelBackgroundReframes, startBackgroundReframes } from './pipeline/backgroundReframe'
 import { generateSocialCaption } from './pipeline/socialCaption'
 import { addCustomFonts, listCustomFonts, removeCustomFont, renderFontsDir } from './fonts'
@@ -187,15 +187,24 @@ export function registerIpcHandlers(): void {
   })
 
   handle('project:updateClip', async (_e, projectId: string, clip: Clip) => {
-    return updateProject(projectId, (project) => {
+    let superseded = false
+    const updated = await updateProject(projectId, (project) => {
       const idx = project.clips.findIndex((c) => c.id === clip.id)
       if (idx === -1) throw new Error('Clip not found')
       const saved = project.clips[idx]
       // The renderer may save a copy it took before a lazy reframe analysis
       // landed on disk. The analysis result belongs to main: keep it rather
       // than letting the stale copy erase the focus track.
-      project.clips[idx] = mergeClipSave(clip, saved, project.videoType)
+      const merged = mergeClipSave(clip, saved, project.videoType)
+      project.clips[idx] = merged
+      // A hand-configured layout (manual source regions, a gaming
+      // composition) replaces anything an in-flight automatic analysis could
+      // still contribute: cancel it once the manual choice is durable, so an
+      // export never waits on work the clip no longer needs.
+      superseded = manualLayoutSupersedesAnalysis(merged)
     })
+    if (superseded) supersedeClipReframe(projectId, clip.id)
+    return updated
   })
 
   handle('clip:ensureReframe', async (_e, projectId: string, clipId: string, retryLayout?: boolean) => {
@@ -274,14 +283,16 @@ export function registerIpcHandlers(): void {
       // A clip exported straight from the grid may never have been opened,
       // so its speaker framing has not been analysed yet. Do that first: the
       // export must frame the clip the way the editor would have shown it.
-      if (needsReframe(clip)) {
-        if (!event.sender.isDestroyed()) {
+      // Also join explicit retries of already-completed layouts. A layout
+      // the user configured manually renders exactly as saved: no analysis,
+      // and no waiting on one a manual choice made obsolete.
+      if (exportWaitsForReframe(clip)) {
+        if (needsReframe(clip) && !event.sender.isDestroyed()) {
           event.sender.send('export:progress', { clipId: clip.id, progress: 0, message: 'Analysing framing…' })
         }
+        project = await ensureClipReframe(projectId, clip.id, controller.signal)
+        clip = project.clips.find((c) => c.id === opts.clipId) ?? clip
       }
-      // Also join explicit retries of already-completed layouts.
-      project = await ensureClipReframe(projectId, clip.id, controller.signal)
-      clip = project.clips.find((c) => c.id === opts.clipId) ?? clip
       const rendered = await renderClip({
         clip,
         source: project.video,
