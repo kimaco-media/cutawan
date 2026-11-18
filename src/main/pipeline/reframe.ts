@@ -55,14 +55,34 @@ export function ensureClipReframe(
       controller,
       retryLayout,
       waiters: 0,
-      promise: analyseAndPersist(projectId, clipId, controller.signal, retryLayout).finally(() =>
-        inFlight.delete(key)
-      )
+      promise: analyseAndPersist(projectId, clipId, controller.signal, retryLayout)
+        .catch((err: unknown) => {
+          // A controller abort is a cancellation, not a failure: the run was
+          // superseded by a manual layout (supersedeClipReframe), or every
+          // signed waiter gave up. Waiters — the editor, an export, the
+          // background batch — continue with the saved project, so nothing
+          // that still renders is interrupted by the cancellation.
+          if (controller.signal.aborted) return loadProject(projectId)
+          throw err
+        })
+        .finally(() => inFlight.delete(key))
     }
     inFlight.set(key, started)
     run = started
   }
   return joinRun(run, signal)
+}
+
+/**
+ * Cancel the in-flight analysis for a clip whose layout the user has since
+ * configured manually (manual source regions or a gaming/presenter
+ * composition protected by a revision). The face tracking and layout work
+ * stops burning CPU immediately; joined waiters receive the saved project,
+ * so an editor or export waiting on the result continues with the user's
+ * layout rather than failing.
+ */
+export function supersedeClipReframe(projectId: string, clipId: string): void {
+  inFlight.get(`${projectId}:${clipId}`)?.controller.abort()
 }
 
 function abortError(signal: AbortSignal): Error {
