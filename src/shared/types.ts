@@ -125,7 +125,7 @@ export interface ClipEditState {
   /** Ordered source intervals; absent in legacy projects (source order). IDs survive moves. */
   sequence?: Array<TimeRange & { id: string }>
   /** Opt-in transitions keyed by ordered adjacent segment IDs; missing means Cut. */
-  transitions?: Array<{ fromId: string; toId: string; kind: 'fade-black'; duration: number }>
+  transitions?: Array<{ fromId: string; toId: string; kind: 'fade-black' | 'zoom'; duration: number }>
   /** Explicit framing choice, even when its values match generated defaults. */
   layoutChosen?: boolean
   /** Remove long pauses and filler words ("um", "uh") from the clip. */

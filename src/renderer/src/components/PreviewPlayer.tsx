@@ -8,7 +8,7 @@ import {
   groupWords,
   wordsInRange
 } from '@shared/captionLayout'
-import { outputJoins, transitionOpacity } from '@shared/transitions'
+import { outputJoins, transitionOpacity, transitionZoom } from '@shared/transitions'
 import { remapClipTimeline } from '@shared/remapClip'
 import { clipKeptSegments, remapTranscript, TimeMap } from '@shared/tighten'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
@@ -329,6 +329,8 @@ export default function PreviewPlayer({
         className="relative min-h-0 flex-1 overflow-hidden rounded-2xl border border-surface-700 bg-black"
         style={{ aspectRatio: String(aspectStyle), containerType: 'size', maxWidth: '100%' }}
       >
+        <div className="absolute inset-0 will-change-transform"
+          style={{ transform: `scale(${transitionZoom(joins, outputTime)})`, transformOrigin: '50% 50%' }}>
         {isFitBlur && clip.thumbnailPath && (
           <img
             src={window.cutawan.mediaUrl(clip.thumbnailPath)}
@@ -372,6 +374,7 @@ export default function PreviewPlayer({
         {clip.edit.showTitle && !compositionHidesTitle(clip) && (clip.hook || clip.title) && outputTime < Math.min(4, outputDuration) && (
           <HookOverlay clip={clip} />
         )}
+        </div>
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-black"
           style={{ opacity: transitionOpacity(joins, outputTime) }} />
         {!playing && (

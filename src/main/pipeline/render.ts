@@ -556,7 +556,7 @@ export function buildFilterGraph(
     current = 'wmk'
   }
 
-  const fades = transitionFilters(options?.transitions ?? [])
+  const fades = transitionFilters(options?.transitions ?? [], source.fps)
   const composedLabel = fades.length ? 'beforeTransitions' : 'vout'
   // Square pixels: an even-rounded crop scaled to exact output dimensions
   // otherwise carries a sample aspect like 404:405 that players honour.
