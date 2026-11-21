@@ -15,6 +15,8 @@ export interface VideoInfo {
 }
 
 export interface TranscriptWord {
+  /** Output join boundary, added only to remapped caption words. */
+  timelineEnd?: number
   text: string
   /** Original ASR text, preserved on the first caption edit. Never used for display. */
   sourceText?: string
@@ -120,6 +122,8 @@ export interface ClipEditState {
   restored?: TimeRange[]
   /** Razor points (source seconds) dividing the timeline into selectable pieces. */
   splits?: number[]
+  /** Ordered source intervals; absent in legacy projects (source order). IDs survive moves. */
+  sequence?: Array<TimeRange & { id: string }>
   /** Explicit framing choice, even when its values match generated defaults. */
   layoutChosen?: boolean
   /** Remove long pauses and filler words ("um", "uh") from the clip. */

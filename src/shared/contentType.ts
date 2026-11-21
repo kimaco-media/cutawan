@@ -49,9 +49,9 @@ export function applyVisualLayout(
   return assessment.allowZoom ? edit : { ...edit, autoZoom: false }
 }
 
-export function validLayoutShots(assessment: Clip['visualLayout'], start: number, end: number): boolean {
+export function validLayoutShots(assessment: Clip['visualLayout'], start: number, end: number, maxShots = 48): boolean {
   if (!assessment?.shots?.length || !Number.isFinite(assessment.start) || !Number.isFinite(assessment.end) ||
-    assessment.shots.length > 48 || start < assessment.start - 0.001 || end > assessment.end + 0.001) return false
+    assessment.shots.length > maxShots || start < assessment.start - 0.001 || end > assessment.end + 0.001) return false
   let cursor = assessment.start
   for (const shot of assessment.shots) {
     if (!Number.isFinite(shot.start) || !Number.isFinite(shot.end) || shot.end <= shot.start ||
@@ -152,7 +152,7 @@ export function effectiveComposition(
 
 export function automaticLayoutShots(clip: Pick<Clip, 'edit' | 'visualLayout'>): NonNullable<NonNullable<Clip['visualLayout']>['shots']> {
   if (clip.edit.framing !== 'auto' || clip.edit.reframeMode !== 'crop' || clip.edit.aspect === 'original') return []
-  if (!validLayoutShots(clip.visualLayout, clip.edit.start, clip.edit.end)) {
+  if (!validLayoutShots(clip.visualLayout, clip.edit.start, clip.edit.end, clip.edit.sequence ? Infinity : 48)) {
     return clip.visualLayout?.preserveContext ? [{ start: clip.edit.start, end: clip.edit.end, mode: 'fit',
       review: { status: 'needs-review', reason: 'Layout does not cover this trim; full source retained. Adjust source regions or choose a layout.' } }] : []
   }
@@ -193,7 +193,7 @@ export function compositionHidesTitle(clip: Pick<Clip, 'edit' | 'visualLayout'>)
 }
 
 export function layoutReviewMessage(clip: Pick<Clip, 'edit' | 'visualLayout'>): string | null {
-  if (!validLayoutShots(clip.visualLayout, clip.edit.start, clip.edit.end)) return automaticLayoutShots(clip)[0]?.review?.reason ?? null
+  if (!validLayoutShots(clip.visualLayout, clip.edit.start, clip.edit.end, clip.edit.sequence ? Infinity : 48)) return automaticLayoutShots(clip)[0]?.review?.reason ?? null
   const shots = clip.edit.framing === 'auto' && clip.edit.reframeMode === 'crop'
     ? automaticLayoutShots(clip) : clip.visualLayout!.shots!.filter(s => s.start < clip.edit.end && s.end > clip.edit.start)
   const issue = shots.find(s => s.review?.status === 'needs-review')

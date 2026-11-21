@@ -210,12 +210,12 @@ export default function EditorScreen(): React.JSX.Element {
             <Toggle
               label="Auto zoom — punch-ins on emphasis, jump zooms covering cuts"
               checked={clip.edit.autoZoom ?? false}
-              disabled={clip.edit.reframeMode !== 'crop' || automaticLayout}
+              disabled={clip.edit.reframeMode !== 'crop' || automaticLayout || Boolean(clip.edit.sequence)}
               onChange={(v) => set({ autoZoom: v })}
             />
-            {(clip.edit.reframeMode !== 'crop' || automaticLayout) && (
+            {(clip.edit.reframeMode !== 'crop' || automaticLayout || clip.edit.sequence) && (
               <p className="mt-1 text-[10px] leading-relaxed text-zinc-600">
-                {automaticLayout ? 'Automatic composition keeps its checked framing; switch to Manual to add zoom.' : 'Auto zoom is only available with fill (crop) reframing.'}
+                {clip.edit.sequence ? 'Auto zoom is unavailable for ordered sequences.' : automaticLayout ? 'Automatic composition keeps its checked framing; switch to Manual to add zoom.' : 'Auto zoom is only available with fill (crop) reframing.'}
               </p>
             )}
           </div>

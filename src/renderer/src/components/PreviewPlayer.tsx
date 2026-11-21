@@ -8,7 +8,8 @@ import {
   groupWords,
   wordsInRange
 } from '@shared/captionLayout'
-import { clipKeptSegments, TimeMap } from '@shared/tighten'
+import { remapClipTimeline } from '@shared/remapClip'
+import { clipKeptSegments, remapTranscript, TimeMap } from '@shared/tighten'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
 import { captionPositionAt } from '@shared/contentRegion'
 import { computeZoomEvents, fitZoomEvents } from '@shared/zoom'
@@ -76,10 +77,15 @@ export default function PreviewPlayer({
     applyPreviewVideoFrame(video, layer, previewPlanRef.current, t, overviewRef.current)
   }, [])
 
+  const sequenceMapRef = useRef<TimeMap | null>(null)
+  const segmentIndexRef = useRef(0)
+  const initializedClipRef = useRef<string | null>(null)
   const requestSeek = useCallback(
     (t: number): void => {
       const video = videoRef.current
       if (!video) return
+      const index = sequenceMapRef.current?.segments.findIndex(s => t >= s.start && t < s.end) ?? -1
+      if (index >= 0) segmentIndexRef.current = index
       if (video.seeking) {
         pendingSeekRef.current = t
       } else {
@@ -101,6 +107,8 @@ export default function PreviewPlayer({
       video.currentTime = target
     }
     if (video) {
+      const index = sequenceMapRef.current?.segments.findIndex(s => video.currentTime >= s.start && video.currentTime < s.end) ?? -1
+      if (index >= 0) segmentIndexRef.current = index
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: performance.now() }
       applyFrame(video.currentTime)
     }
@@ -190,6 +198,18 @@ export default function PreviewPlayer({
     return kept?.length ? kept : null
   }, [clip, project.transcript])
   const timeMap = useMemo(() => (keptSegments ? new TimeMap(keptSegments) : null), [keptSegments])
+  useEffect(() => {
+    sequenceMapRef.current = timeMap
+    if (initializedClipRef.current !== clip.id) {
+      initializedClipRef.current = clip.id
+      requestSeek(timeMap?.toSource(0) ?? start)
+    }
+    const current = pendingSeekRef.current ?? videoRef.current?.currentTime ?? start
+    segmentIndexRef.current = Math.max(0, timeMap?.segments.findIndex(s => current >= s.start && current < s.end) ?? 0)
+  }, [timeMap, start, clip.id, requestSeek])
+  const captionTranscript = useMemo(() => project.transcript && timeMap
+    ? remapTranscript(project.transcript, timeMap, start, end) : project.transcript, [project.transcript, timeMap, start, end])
+  const captionClip = useMemo(() => timeMap ? remapClipTimeline(clip, timeMap) : clip, [clip, timeMap])
   const outputDuration = timeMap?.outputDuration ?? duration
   const outputTime = timeMap ? timeMap.toOutput(time) : Math.max(0, time - start)
 
@@ -236,13 +256,14 @@ export default function PreviewPlayer({
       // seeks (loop reset / tighten skip) before `seeked` fires is what
       // caused the stutter-then-freeze after edits.
       if (video && !video.seeking && pendingSeekRef.current === null) {
-        if (video.currentTime >= end) {
-          video.currentTime = start
-          playbackClockRef.current = { mediaTime: start, wallAt: performance.now() }
-        } else if (timeMap && !video.paused && timeMap.isRemoved(video.currentTime)) {
-          const next = timeMap.nextKeptStart(video.currentTime)
-          video.currentTime = next ?? end
-          playbackClockRef.current = { mediaTime: video.currentTime, wallAt: performance.now() }
+        if (timeMap) {
+          const next = timeMap.advance(video.currentTime, segmentIndexRef.current)
+          segmentIndexRef.current = next.index
+          if (next.time !== video.currentTime) {
+            requestSeek(next.time)
+          }
+        } else if (video.currentTime >= end) {
+          requestSeek(start)
         }
         const smoothed = smoothPlaybackTime(video, playbackClockRef.current)
         playbackClockRef.current = smoothed.clock
@@ -260,7 +281,7 @@ export default function PreviewPlayer({
     }
     if (playing) rafRef.current = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(rafRef.current)
-  }, [playing, start, end, timeMap, setTime, applyFrame])
+  }, [playing, start, end, timeMap, setTime, applyFrame, requestSeek])
 
   const togglePlay = (): void => {
     const video = videoRef.current
@@ -270,7 +291,8 @@ export default function PreviewPlayer({
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: 0 }
       setPlaying(false)
     } else {
-      if (video.currentTime >= end - 0.05) requestSeek(start)
+      if (timeMap?.isRemoved(video.currentTime)) requestSeek(timeMap.toSource(0))
+      else if (!timeMap && video.currentTime >= end - 0.05) requestSeek(start)
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: performance.now() }
       void video.play()
       setPlaying(true)
@@ -287,7 +309,7 @@ export default function PreviewPlayer({
   }, [setToggleHandler])
 
   const restart = (): void => {
-    requestSeek(start)
+    requestSeek(timeMap?.toSource(0) ?? start)
   }
 
   const seek = (fraction: number): void => {
@@ -314,8 +336,17 @@ export default function PreviewPlayer({
             poster={clip.thumbnailPath ? window.cutawan.mediaUrl(clip.thumbnailPath) : undefined}
             className="h-full w-full"
             style={{ objectFit: isCrop ? 'cover' : 'contain' }}
-            onEnded={() => setPlaying(false)}
+            onEnded={() => {
+              if (!videoRef.current?.ended) return
+              if (playing && timeMap) {
+                const next = timeMap.advance(end, segmentIndexRef.current)
+                segmentIndexRef.current = next.index
+                requestSeek(next.time)
+                void videoRef.current?.play()
+              } else setPlaying(false)
+            }}
             onSeeked={handleSeeked}
+            onLoadedMetadata={() => requestSeek(timeMap?.toSource(0) ?? start)}
             onLoadedData={() => applyFrame(videoRef.current?.currentTime ?? start)}
             preload="auto"
           />
@@ -323,15 +354,15 @@ export default function PreviewPlayer({
         <canvas ref={overviewRef} aria-hidden="true" className="pointer-events-none absolute left-0 top-0 hidden w-full" />
         <BrollOverlay clip={clip} time={time} />
         <WatermarkOverlay />
-        {clip.edit.captionsEnabled && project.transcript && (
+        {clip.edit.captionsEnabled && captionTranscript && (
           <CaptionOverlay
-            transcript={project.transcript}
-            clip={clip}
-            time={time}
+            transcript={captionTranscript}
+            clip={captionClip}
+            time={outputTime}
             aspectRatio={aspectStyle}
           />
         )}
-        {clip.edit.showTitle && !compositionHidesTitle(clip) && (clip.hook || clip.title) && time - start < Math.min(4, duration) && (
+        {clip.edit.showTitle && !compositionHidesTitle(clip) && (clip.hook || clip.title) && outputTime < Math.min(4, outputDuration) && (
           <HookOverlay clip={clip} />
         )}
         {!playing && (

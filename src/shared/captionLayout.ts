@@ -145,6 +145,7 @@ export function groupWords(words: TranscriptWord[], budget: CaptionLayoutBudget)
 
     if (
       count >= budget.maxWords ||
+      (prev && prev.timelineEnd !== w.timelineEnd) ||
       (prev && w.start - prev.end > MAX_PAUSE_IN_GROUP_SEC) ||
       endsSentence ||
       (needsNewLine && !canStartLine)
@@ -184,5 +185,5 @@ export function groupDisplayEnd(groups: WordGroup[], index: number, clipEnd: num
   const next = groups[index + 1]
   let end = group.end + CAPTION_HOLD_SEC
   if (next) end = Math.min(end, Math.max(group.end, next.start))
-  return Math.min(clipEnd, Math.max(group.end, end))
+  return Math.min(clipEnd, group.words.at(-1)?.timelineEnd ?? Infinity, Math.max(group.end, end))
 }
