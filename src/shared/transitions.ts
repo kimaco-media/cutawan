@@ -1,6 +1,13 @@
-import type { Clip, Transcript } from './types'
+import type { Clip, ClipEditState, Transcript } from './types'
 import { orderedPieces } from './editOps'
 import { clipKeptSegments, TimeMap } from './tighten'
+
+export type TransitionKind = NonNullable<ClipEditState['transitions']>[number]['kind']
+export const TRANSITION_NAMES: Record<TransitionKind | 'cut', string> = {
+  cut: 'None / Cut', 'fade-black': 'Fade through black', zoom: 'Zoom',
+  dissolve: 'Dissolve', 'slide-left': 'Slide left', 'slide-right': 'Slide right', 'whip-pan': 'Whip pan (left)'
+}
+export const isOverlap = (kind: string): boolean => ['dissolve', 'slide-left', 'slide-right', 'whip-pan'].includes(kind)
 
 export interface OutputJoin {
   fromId: string
@@ -8,30 +15,77 @@ export interface OutputJoin {
   time: number
   maxDuration: number
   duration: number
-  kind: 'cut' | 'fade-black' | 'zoom'
+  kind: 'cut' | TransitionKind
+  baseTime: number
+  overlap: number
+  maxPoint: number
+  maxOverlap: number
+  overlapReason?: string
+  leftSourceEnd: number
+  rightSourceStart: number
+  leftDuration: number
+  rightDuration: number
 }
 
-/** No overlap or inserted frames: source, speech and caption timing stay unchanged.
- * Only currently adjacent retained pieces can activate a saved transition. A
- * broken adjacency stays dormant, so undo/rejoining the same IDs restores it.
- * Each half fits within half of the adjacent edge span, preventing overlapping
- * fades even after trim, manual cuts or automatic pause removal.
- */
+/** Overlap effects consume only verified speech-free tails/heads. Point effects
+ * keep duration unchanged. Transitions belong to adjacent retained IDs; a
+ * broken adjacency stays dormant and rejoining the same IDs restores it. */
 export function outputJoins(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): OutputJoin[] {
-  const map = new TimeMap(clipKeptSegments(clip, transcript) ?? [clip.edit])
-  const pieces = orderedPieces(clip.edit).map(piece => ({
-    ...piece,
-    spans: map.mapRange(piece)
-  })).filter(piece => piece.spans.length > 0)
+  const spans = clipKeptSegments(clip, transcript) ?? [clip.edit]
+  const map = new TimeMap(spans)
+  const pieces = orderedPieces(clip.edit).map(piece => ({ ...piece, spans: map.mapRange(piece) }))
+    .filter(piece => piece.spans.length > 0)
+  const speech = transcript ? [...(transcript.speech ?? []), ...transcript.segments.flatMap(s => s.words)] : []
+  let removed = 0
   return pieces.slice(1).map((right, i) => {
-    const left = pieces[i]
-    const tail = left.spans.at(-1)!, head = right.spans[0]
-    const maxDuration = Math.floor(Math.max(0, Math.min(1.5, tail.end - tail.start, head.end - head.start)) * 1000) / 1000
-    const saved = clip.edit.transitions?.find(t => t.fromId === left.id && t.toId === right.id && (t.kind === 'fade-black' || t.kind === 'zoom'))
+    const left = pieces[i], tail = left.spans.at(-1)!, head = right.spans[0]
+    // Use a midpoint to avoid ambiguous source timestamps at reordered joins.
+    const leftEnd = map.toSource((tail.start + tail.end) / 2) + (tail.end - tail.start) / 2
+    const rightStart = map.toSource(head.start)
+    const leftDuration = tail.end - tail.start, rightDuration = head.end - head.start
+    const maxPoint = Math.floor(Math.max(0, Math.min(1.5, leftDuration, rightDuration)) * 1000) / 1000
+    let silentTail = leftDuration, silentHead = rightDuration
+    for (const word of speech) {
+      if (word.start < leftEnd && word.end > leftEnd - leftDuration) silentTail = Math.min(silentTail, Math.max(0, leftEnd - word.end - 0.05))
+      if (word.end > rightStart && word.start < rightStart + rightDuration) silentHead = Math.min(silentHead, Math.max(0, word.start - rightStart - 0.05))
+    }
+    const maxOverlap = transcript ? Math.floor(Math.max(0, Math.min(1.5, leftDuration / 2, rightDuration / 2, silentTail, silentHead)) * 1000) / 1000 : 0
+    const saved = clip.edit.transitions?.find(t => t.fromId === left.id && t.toId === right.id && Object.hasOwn(TRANSITION_NAMES, t.kind))
+    const kind = saved?.kind ?? 'cut'
+    const maxDuration = isOverlap(kind) ? maxOverlap : maxPoint
     const requested = saved && Number.isFinite(saved.duration) ? Math.max(0.1, saved.duration) : 0
-    return { kind: saved?.kind ?? 'cut', fromId: left.id, toId: right.id, time: head.start, maxDuration,
-      duration: maxDuration >= 0.1 ? Math.min(maxDuration, requested) : 0 }
+    const duration = maxDuration >= 0.1 ? Math.min(maxDuration, requested) : 0
+    const overlap = isOverlap(kind) ? duration : 0
+    const time = head.start - removed - overlap / 2
+    removed += overlap
+    return { fromId: left.id, toId: right.id, kind, time, baseTime: head.start, maxDuration, duration, overlap, maxPoint, maxOverlap,
+      overlapReason: !transcript ? 'A transcript is required to protect speech during overlaps.' : maxOverlap < 0.1 ? 'Not enough speech-free footage on both sides (minimum 0.1 s).' : undefined,
+      leftSourceEnd: leftEnd, rightSourceStart: rightStart, leftDuration, rightDuration }
   })
+}
+
+/** Canonical playback clock including overlap; source annotations use the same offsets. */
+export function playbackTimeMap(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): TimeMap {
+  const joins = outputJoins(clip, transcript)
+  const kept = clipKeptSegments(clip, transcript) ?? [clip.edit]
+  // Legacy splits are editable joins too, even before the first reorder.
+  const segments = kept.flatMap(span => {
+    const points = [span.start, ...joins.filter(j => j.overlap > 0).flatMap(j => [j.leftSourceEnd, j.rightSourceStart]).filter(t => t > span.start && t < span.end), span.end]
+    const bounds = [...new Set(points)].sort((a, b) => a - b)
+    return bounds.slice(0, -1).map((start, i) => ({ start, end: bounds[i + 1] }))
+  })
+  return new TimeMap(segments, segments.map(s => joins.find(j => j.rightSourceStart === s.start)?.overlap ?? 0))
+}
+
+/** A bounded two-piece render for the exact export transition, without AI work. */
+export function joinPreviewClip(clip: Clip, join: OutputJoin): Clip {
+  const tail = Math.min(join.leftDuration, join.duration * 2 + 0.35)
+  const head = Math.min(join.rightDuration, join.duration * 2 + 0.35)
+  const left = { id: join.fromId, start: join.leftSourceEnd - tail, end: join.leftSourceEnd }
+  const right = { id: join.toId, start: join.rightSourceStart, end: join.rightSourceStart + head }
+  return { ...clip, edit: { ...clip.edit, start: Math.min(left.start, right.start), end: Math.max(left.end, right.end),
+    sequence: [left, right], cuts: [], restored: [], splits: [], tightenCuts: false, autoZoom: false,
+    transitions: join.kind === 'cut' ? [] : [{ fromId: left.id, toId: right.id, kind: join.kind, duration: join.duration }] } }
 }
 
 /** Opacity of a black overlay over the final composed image, including text. */
@@ -59,10 +113,10 @@ export function transitionZoom(joins: OutputJoin[], time: number): number {
 export function transitionFilters(joins: OutputJoin[], fps = 30): string[] {
   const filters = joins.filter(j => j.kind === 'fade-black' && j.duration > 0).flatMap(join => {
     const half = join.duration / 2
-    const from = join.time - half, until = join.time + half
+    const from = join.baseTime - half, until = join.baseTime + half
     return [
-      `fade=t=out:st=${from}:d=${half}:enable='gte(t,${from})*lt(t,${join.time})'`,
-      `fade=t=in:st=${join.time}:d=${half}:enable='gte(t,${join.time})*lt(t,${until})'`
+      `fade=t=out:st=${from}:d=${half}:enable='gte(t,${from})*lt(t,${join.baseTime})'`,
+      `fade=t=in:st=${join.baseTime}:d=${half}:enable='gte(t,${join.baseTime})*lt(t,${until})'`
     ]
   })
   const zooms = joins.filter(j => j.kind === 'zoom' && j.duration > 0)
@@ -70,7 +124,7 @@ export function transitionFilters(joins: OutputJoin[], fps = 30): string[] {
     const rate = Number.isFinite(fps) && fps > 0 && fps <= 240 ? fps : 30
     // perspective evaluates by frame index: normalize VFR before using that clock.
     filters.unshift(`fps=${rate}`)
-    const ramps = zooms.map(j => `pow(max(0,1-abs(in/${rate}-${j.time})/${j.duration / 2}),2)`)
+    const ramps = zooms.map(j => `pow(max(0,1-abs(in/${rate}-${j.baseTime})/${j.duration / 2}),2)`)
     const z = `(1+${TRANSITION_ZOOM_AMOUNT}*(${ramps.join('+')}))`
     const left = `(W-W/${z})/2`, right = `W-(W-W/${z})/2`
     const top = `(H-H/${z})/2`, bottom = `H-(H-H/${z})/2`
@@ -78,4 +132,11 @@ export function transitionFilters(joins: OutputJoin[], fps = 30): string[] {
       `x2='${left}':y2='${bottom}':x3='${right}':y3='${bottom}':interpolation=cubic:eval=frame`)
   }
   return filters
+}
+
+/** Commit an editable duration only after blur/Enter; empty/invalid input cancels. */
+export function parseTransitionDuration(text: string, current: number, maximum: number): number {
+  const raw = text.trim().replace(',', '.')
+  const parsed = raw ? Number(raw) : NaN
+  return Number.isFinite(parsed) ? Math.max(0.1, Math.min(maximum, parsed)) : current
 }

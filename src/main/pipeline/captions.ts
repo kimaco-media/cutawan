@@ -141,6 +141,7 @@ export interface CaptionOptions {
   clipEnd: number
   /** Optional title overlaid near the top for the first seconds of the clip. */
   title?: string
+  titleDuration?: number
   /** Custom font family overriding the style's font (must exist in fontsdir). */
   fontFamily?: string
   /** App-wide brand palette merged onto the caption preset. */
@@ -201,8 +202,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
   const lines: string[] = []
   const clipDur = opts.clipEnd - opts.clipStart
 
-  if (opts.title && opts.title.trim().length > 0) {
-    const showFor = Math.min(4, clipDur)
+  if ((opts.titleDuration ?? 4) > 0 && opts.title && opts.title.trim().length > 0) {
+    const showFor = Math.min(opts.titleDuration ?? 4, clipDur)
     lines.push(
       `Dialogue: 1,${assTime(0)},${assTime(showFor)},Title,,0,0,0,,{\\fad(200,300)}${escapeAss(opts.title.trim())}`
     )

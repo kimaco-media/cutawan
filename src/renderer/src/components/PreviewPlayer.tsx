@@ -8,7 +8,7 @@ import {
   groupWords,
   wordsInRange
 } from '@shared/captionLayout'
-import { outputJoins, transitionOpacity, transitionZoom } from '@shared/transitions'
+import { outputJoins, transitionOpacity, transitionZoom, playbackTimeMap } from '@shared/transitions'
 import { remapClipTimeline } from '@shared/remapClip'
 import { clipKeptSegments, remapTranscript, TimeMap } from '@shared/tighten'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
@@ -198,7 +198,7 @@ export default function PreviewPlayer({
     const kept = clipKeptSegments(clip, project.transcript)
     return kept?.length ? kept : null
   }, [clip, project.transcript])
-  const timeMap = useMemo(() => (keptSegments ? new TimeMap(keptSegments) : null), [keptSegments])
+  const timeMap = useMemo(() => keptSegments || clip.edit.transitions?.length ? playbackTimeMap(clip, project.transcript) : null, [keptSegments, clip, project.transcript])
   useEffect(() => {
     sequenceMapRef.current = timeMap
     if (initializedClipRef.current !== clip.id) {
@@ -212,6 +212,8 @@ export default function PreviewPlayer({
     ? remapTranscript(project.transcript, timeMap, start, end) : project.transcript, [project.transcript, timeMap, start, end])
   const captionClip = useMemo(() => timeMap ? remapClipTimeline(clip, timeMap) : clip, [clip, timeMap])
   const joins = useMemo(() => outputJoins(clip, project.transcript), [clip, project.transcript])
+  const baseTimeMap = useMemo(() => keptSegments ? new TimeMap(keptSegments) : null, [keptSegments])
+  const titleTime = baseTimeMap ? baseTimeMap.toOutput(time) : time - start
   const outputDuration = timeMap?.outputDuration ?? duration
   const outputTime = timeMap ? timeMap.toOutput(time) : Math.max(0, time - start)
 
@@ -298,6 +300,7 @@ export default function PreviewPlayer({
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: 0 }
       setPlaying(false)
     } else {
+      document.querySelectorAll<HTMLVideoElement>('[data-transition-preview] video').forEach(preview => preview.pause())
       if (timeMap && timeMap.playbackSegmentIndex(video.currentTime, segmentIndexRef.current) < 0) requestSeek(timeMap.toSource(0))
       else if (!timeMap && video.currentTime >= end - 0.05) requestSeek(start)
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: performance.now() }
@@ -371,7 +374,7 @@ export default function PreviewPlayer({
             aspectRatio={aspectStyle}
           />
         )}
-        {clip.edit.showTitle && !compositionHidesTitle(clip) && (clip.hook || clip.title) && outputTime < Math.min(4, outputDuration) && (
+        {clip.edit.showTitle && !compositionHidesTitle(clip) && (clip.hook || clip.title) && titleTime < Math.min(4, baseTimeMap?.outputDuration ?? duration) && (
           <HookOverlay clip={clip} />
         )}
         </div>
@@ -389,6 +392,10 @@ export default function PreviewPlayer({
         )}
       </div>
 
+      {joins.some(join => join.overlap > 0) && <p className="max-w-md text-xs text-amber-200">
+        Dissolve, slides and Whip pan use a rendered join preview. Open the ◇ marker and choose “Render join preview”
+        to see and scrub the actual blend with audio; this source preview shows the cut.
+      </p>}
       <div className="flex w-full max-w-md items-center gap-3">
         <button
           onClick={togglePlay}
