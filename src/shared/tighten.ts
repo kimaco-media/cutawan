@@ -222,6 +222,9 @@ export function snapToSilence(
   return out
 }
 
+/** Browser seek timestamps can round just below a requested source boundary. */
+const MEDIA_SEEK_TOLERANCE_SEC = 0.001
+
 /** Ordered, non-overlapping source intervals mapped to contiguous output time. */
 export class TimeMap {
   private readonly offsets: number[] = []
@@ -265,11 +268,18 @@ export class TimeMap {
     })
   }
 
+  /** Keep the requested piece when a completed seek rounds below its start. */
+  playbackSegmentIndex(t: number, preferred: number): number {
+    const segment = this.segments[preferred]
+    if (segment && t >= segment.start - MEDIA_SEEK_TOLERANCE_SEC && t < segment.end) return preferred
+    return this.segments.findIndex(s => t >= s.start && t < s.end)
+  }
+
   /** Resolve the next join using the previously active piece, not source ordering. */
   advance(t: number, index: number): { time: number; index: number } {
     const seg = this.segments[index]
-    if (seg && t >= seg.start && t < seg.end) return { time: t, index }
-    const next = seg && t >= seg.end ? (index + 1) % this.segments.length : 0
+    if (seg && t >= seg.start - MEDIA_SEEK_TOLERANCE_SEC && t < seg.end) return { time: t, index }
+    const next = seg ? (t >= seg.end ? (index + 1) % this.segments.length : index) : 0
     return { time: this.segments[next]?.start ?? t, index: next }
   }
 

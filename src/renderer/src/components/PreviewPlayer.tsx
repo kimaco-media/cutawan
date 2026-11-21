@@ -103,11 +103,11 @@ export default function PreviewPlayer({
     const video = videoRef.current
     const target = pendingSeekRef.current
     pendingSeekRef.current = null
-    if (video && target !== null && Math.abs(video.currentTime - target) > 0.05) {
+    if (video && target !== null && Math.abs(video.currentTime - target) > 0.001) {
       video.currentTime = target
     }
     if (video) {
-      const index = sequenceMapRef.current?.segments.findIndex(s => video.currentTime >= s.start && video.currentTime < s.end) ?? -1
+      const index = sequenceMapRef.current?.playbackSegmentIndex(video.currentTime, segmentIndexRef.current) ?? -1
       if (index >= 0) segmentIndexRef.current = index
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: performance.now() }
       applyFrame(video.currentTime)
@@ -205,7 +205,7 @@ export default function PreviewPlayer({
       requestSeek(timeMap?.toSource(0) ?? start)
     }
     const current = pendingSeekRef.current ?? videoRef.current?.currentTime ?? start
-    segmentIndexRef.current = Math.max(0, timeMap?.segments.findIndex(s => current >= s.start && current < s.end) ?? 0)
+    segmentIndexRef.current = Math.max(0, timeMap?.playbackSegmentIndex(current, segmentIndexRef.current) ?? 0)
   }, [timeMap, start, clip.id, requestSeek])
   const captionTranscript = useMemo(() => project.transcript && timeMap
     ? remapTranscript(project.transcript, timeMap, start, end) : project.transcript, [project.transcript, timeMap, start, end])
@@ -271,10 +271,13 @@ export default function PreviewPlayer({
         // React (captions, playhead, transcript) only needs ~30 updates a
         // second; re-rendering it every frame dropped frames and made the
         // zoom stutter.
-        applyFrame(smoothed.t)
-        if (Math.abs(smoothed.t - publishedRef.current) >= 1 / 30) {
-          publishedRef.current = smoothed.t
-          setTime(smoothed.t)
+        // Do not display a frame from the source-neighbouring piece when a
+        // seek landed a fraction of a millisecond before the selected start.
+        const displayTime = Math.max(timeMap?.segments[segmentIndexRef.current]?.start ?? start, smoothed.t)
+        applyFrame(displayTime)
+        if (Math.abs(displayTime - publishedRef.current) >= 1 / 30) {
+          publishedRef.current = displayTime
+          setTime(displayTime)
         }
       }
       rafRef.current = requestAnimationFrame(tick)
@@ -291,7 +294,7 @@ export default function PreviewPlayer({
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: 0 }
       setPlaying(false)
     } else {
-      if (timeMap?.isRemoved(video.currentTime)) requestSeek(timeMap.toSource(0))
+      if (timeMap && timeMap.playbackSegmentIndex(video.currentTime, segmentIndexRef.current) < 0) requestSeek(timeMap.toSource(0))
       else if (!timeMap && video.currentTime >= end - 0.05) requestSeek(start)
       playbackClockRef.current = { mediaTime: video.currentTime, wallAt: performance.now() }
       void video.play()

@@ -58,6 +58,28 @@ describe('ordered output sequence', () => {
     ])
   })
 
+  it('does not repeatedly seek when media time rounds below the first output boundary', () => {
+    const start = 6.123456789
+    const map = new TimeMap([{ start, end: 9 }, { start: 0, end: start }])
+    // Chromium exposes media timestamps at finite precision after a seek.
+    const landed = Math.floor(map.toSource(0) * 1e6) / 1e6
+    expect(map.playbackSegmentIndex(landed, 0)).toBe(0)
+    expect(map.advance(landed, 0)).toEqual({ time: landed, index: 0 })
+    expect(map.advance(landed + 1 / 60, 0)).toEqual({ time: landed + 1 / 60, index: 0 })
+  })
+
+  it('tolerates rounded joins without masking real seeks or delaying the next join', () => {
+    const map = new TimeMap([{ start: 10, end: 12 }, { start: 4.123456789, end: 6 }, { start: 0, end: 4.123456789 }])
+    const landed = 4.123456
+    expect(map.playbackSegmentIndex(landed, 1)).toBe(1)
+    expect(map.advance(landed, 1)).toEqual({ time: landed, index: 1 })
+    expect(map.advance(6, 1)).toEqual({ time: 0, index: 2 })
+    expect(map.playbackSegmentIndex(2, 1)).toBe(2)
+    expect(map.advance(4, 1)).toEqual({ time: 4.123456789, index: 1 })
+    expect(map.advance(10, 0)).toEqual({ time: 10, index: 0 })
+    expect(map.advance(12, 0)).toEqual({ time: 4.123456789, index: 1 })
+  })
+
   it('retains order when tightening and restoring pauses', () => {
     const transcript = makeTranscript(['one two three', 'four five six'], { sentenceGapSec: 4 })
     const edit = { ...reordered(), tightenCuts: true }
