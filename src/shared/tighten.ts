@@ -1,4 +1,6 @@
-import type { Clip, SpeechRegion, TimeRange, Transcript } from './types'
+import { sequenceWithTrim } from './sequence'
+import { focusAt, focusPanDuration, focusSnaps } from './focusTrack'
+import type { FocusKeyframe, Clip, SpeechRegion, TimeRange, Transcript } from './types'
 
 /**
  * "Tighten cuts": compute which sub-segments of a clip to keep so that long
@@ -61,9 +63,12 @@ export function clipKeptSegments(clip: Pick<Clip, 'edit' | 'visualStory'>, trans
     : null
   const cuts = normalizeRanges(clip.edit.cuts, start, end)
   const restored = auto ? normalizeRanges(clip.edit.restored, start, end) : []
-  if (!cuts.length && !restored.length) return auto
+  if (!cuts.length && !restored.length && !clip.edit.sequence) return auto
   const base = normalizeRanges([...(auto ?? [{ start, end }]), ...restored], start, end)
   const kept = subtractRanges(base, cuts).filter(r => r.end - r.start >= MIN_PIECE_SEC)
+  if (clip.edit.sequence) return sequenceWithTrim(clip.edit)!.flatMap(piece => kept
+    .map(r => ({ start: Math.max(r.start, piece.start), end: Math.min(r.end, piece.end) }))
+    .filter(r => r.end - r.start >= MIN_PIECE_SEC))
   if (kept.length === 1 && kept[0].start <= start + 1e-6 && kept[0].end >= end - 1e-6) return null
   return kept
 }
@@ -217,11 +222,14 @@ export function snapToSilence(
   return out
 }
 
-/** Monotonic mapping from source time to the compacted output timeline. */
+/** Browser seek timestamps can round just below a requested source boundary. */
+const MEDIA_SEEK_TOLERANCE_SEC = 0.001
+
+/** Ordered, non-overlapping source intervals mapped to contiguous output time. */
 export class TimeMap {
   private readonly offsets: number[] = []
 
-  constructor(private readonly segments: KeptSegment[]) {
+  constructor(readonly segments: KeptSegment[]) {
     let acc = 0
     for (const seg of segments) {
       this.offsets.push(acc)
@@ -236,12 +244,43 @@ export class TimeMap {
 
   /** Map a source time to output time (clamping removed spans to boundaries). */
   toOutput(t: number): number {
-    for (let i = 0; i < this.segments.length; i++) {
-      const seg = this.segments[i]
-      if (t < seg.start) return this.offsets[i]
-      if (t <= seg.end) return this.offsets[i] + (t - seg.start)
-    }
-    return this.outputDuration
+    const index = this.segments.findIndex(seg => t >= seg.start && t < seg.end)
+    if (index >= 0) return this.offsets[index] + t - this.segments[index].start
+    // Removed source times clamp to the nearest source boundary, regardless of order.
+    let distance = Infinity, output = 0
+    this.segments.forEach((seg, i) => {
+      for (const edge of [seg.start, seg.end]) {
+        if (Math.abs(t - edge) < distance) {
+          distance = Math.abs(t - edge)
+          output = this.offsets[i] + edge - seg.start
+        }
+      }
+    })
+    return output
+  }
+
+  /** Split annotations at joins; mapping both endpoints alone is ambiguous. */
+  mapRange<T extends TimeRange>(range: T): T[] {
+    return this.segments.flatMap((seg, i) => {
+      const start = Math.max(seg.start, range.start), end = Math.min(seg.end, range.end)
+      return end > start ? [{ ...range, start: this.offsets[i] + start - seg.start,
+        end: this.offsets[i] + end - seg.start }] : []
+    })
+  }
+
+  /** Keep the requested piece when a completed seek rounds below its start. */
+  playbackSegmentIndex(t: number, preferred: number): number {
+    const segment = this.segments[preferred]
+    if (segment && t >= segment.start - MEDIA_SEEK_TOLERANCE_SEC && t < segment.end) return preferred
+    return this.segments.findIndex(s => t >= s.start && t < s.end)
+  }
+
+  /** Resolve the next join using the previously active piece, not source ordering. */
+  advance(t: number, index: number): { time: number; index: number } {
+    const seg = this.segments[index]
+    if (seg && t >= seg.start - MEDIA_SEEK_TOLERANCE_SEC && t < seg.end) return { time: t, index }
+    const next = seg ? (t >= seg.end ? (index + 1) % this.segments.length : index) : 0
+    return { time: this.segments[next]?.start ?? t, index: next }
   }
 
   /** Invert an output timestamp; at a cut, select the following kept frame. */
@@ -281,19 +320,35 @@ export function remapTranscript(
   clipStart: number,
   clipEnd: number
 ): Transcript {
-  const segments = transcript.segments
-    .filter((seg) => seg.end >= clipStart && seg.start <= clipEnd)
-    .map((seg) => ({
-      ...seg,
-      start: map.toOutput(Math.max(seg.start, clipStart)),
-      end: map.toOutput(Math.min(seg.end, clipEnd)),
-      words: seg.words
-        .filter((w) => {
-          const mid = (w.start + w.end) / 2
-          return mid >= clipStart && mid <= clipEnd && !map.isRemoved(mid)
-        })
-        .map((w) => ({ ...w, start: map.toOutput(w.start), end: map.toOutput(w.end) }))
-    }))
-    .filter((seg) => seg.words.length > 0 || seg.end > seg.start)
-  return { ...transcript, segments }
+  const segments = map.segments.flatMap((range) => transcript.segments.flatMap(seg => {
+    const from = Math.max(range.start, clipStart, seg.start)
+    const to = Math.min(range.end, clipEnd, seg.end)
+    if (to <= from) return []
+    const offset = map.toOutput(range.start) - range.start
+    const words = seg.words.filter(w => {
+      const mid = (w.start + w.end) / 2
+      return mid >= from && mid < to
+    }).map(w => ({ ...w, start: Math.max(from, w.start) + offset, end: Math.min(to, w.end) + offset, timelineEnd: range.end + offset }))
+    return [{ ...seg, start: from + offset, end: to + offset, words,
+      text: words.map(w => w.text).join(' ') }]
+  }))
+  return { ...transcript, durationSec: map.outputDuration, segments,
+    speech: transcript.speech?.flatMap(r => map.mapRange(r)).sort((a, b) => a.start - b.start) }
+}
+
+/** Sample only moving pans; preserve the source curve even when a join clips it. */
+export function remapFocusTrack(track: FocusKeyframe[], map: TimeMap): FocusKeyframe[] {
+  return map.segments.flatMap(seg => {
+    const times = new Set([seg.start])
+    track.forEach((key, index) => {
+      if (key.t >= seg.start && key.t < seg.end) times.add(key.t)
+      if (!focusSnaps(track, index)) {
+        const end = Math.min(seg.end, key.t + focusPanDuration(track, index))
+        for (let t = Math.max(seg.start, key.t); t < end; t += 1 / 60) times.add(t)
+        if (end < seg.end && end >= seg.start) times.add(end)
+      }
+    })
+    const offset = map.toOutput(seg.start) - seg.start
+    return [...times].sort((a, b) => a - b).map(t => ({ t: t + offset, x: focusAt(track, t), cut: true }))
+  })
 }

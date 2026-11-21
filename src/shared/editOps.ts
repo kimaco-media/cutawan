@@ -1,3 +1,4 @@
+import { sequenceWithTrim } from './sequence'
 import type { Clip, ClipEditState, TimeRange, Transcript } from './types'
 import { editedClipDuration, normalizeRanges } from './tighten'
 
@@ -17,7 +18,9 @@ export function splitAt(edit: ClipEditState, t: number): ClipEditState {
   if (t <= edit.start + SPLIT_TOLERANCE_SEC || t >= edit.end - SPLIT_TOLERANCE_SEC) return edit
   const splits = edit.splits ?? []
   if (splits.some(s => Math.abs(s - t) < SPLIT_TOLERANCE_SEC)) return edit
-  return { ...edit, splits: [...splits, t].sort((a, b) => a - b) }
+  const sequence = sequenceWithTrim(edit)?.flatMap(p => t > p.start + SPLIT_TOLERANCE_SEC && t < p.end - SPLIT_TOLERANCE_SEC
+    ? [{ ...p, end: t }, { ...p, id: `${p.id}@${t}`, start: t }] : [p])
+  return { ...edit, splits: [...splits, t].sort((a, b) => a - b), ...(sequence ? { sequence } : {}) }
 }
 
 /** Pieces between the trim edges and razor points, in order. */
@@ -82,4 +85,19 @@ export function setTrimEdge(edit: ClipEditState, which: 'start' | 'end', t: numb
 /** A cut must leave something to play: never less than MIN_CLIP_SEC. */
 export function keepsPlayback(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): boolean {
   return editedClipDuration(clip, transcript) >= MIN_CLIP_SEC
+}
+
+/** Lazily migrate source-order projects without changing their saved edits. */
+export function orderedPieces(edit: ClipEditState): NonNullable<ClipEditState['sequence']> {
+  return sequenceWithTrim(edit) ?? timelinePieces(edit).map(p => ({ ...p, id: `source:${p.start}` }))
+}
+
+/** Move before an ID, or to the end. Source references and IDs stay unchanged. */
+export function movePiece(edit: ClipEditState, id: string, before: string | null): ClipEditState {
+  const sequence = orderedPieces(edit)
+  const piece = sequence.find(p => p.id === id)
+  if (!piece || id === before || (before !== null && !sequence.some(p => p.id === before))) return edit
+  const rest = sequence.filter(p => p.id !== id)
+  rest.splice(before === null ? rest.length : rest.findIndex(p => p.id === before), 0, piece)
+  return { ...edit, sequence: rest }
 }

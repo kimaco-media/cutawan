@@ -15,6 +15,7 @@ import type {
 } from '@shared/types'
 import type { EncoderPreference } from '@shared/types'
 import { clipKeptSegments, remapTranscript, TimeMap, type KeptSegment } from '@shared/tighten'
+import { remapClipTimeline } from '@shared/remapClip'
 import { focusPanDuration, focusSnaps } from '@shared/focusTrack'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
 import { compositionGraph, fitRegionGraph } from './layoutFilters'
@@ -316,22 +317,23 @@ function reframeGraph(
  * (already -ss seeked, so clip-relative) input and concatenates them.
  * Produces [vcat] and, when audio is present, [acat].
  */
-function tightenGraph(segments: KeptSegment[], clipStart: number, hasAudio: boolean): string {
+export function tightenGraph(segments: KeptSegment[], clipStart: number, hasAudio: boolean, separateInputs = false): string {
   const parts: string[] = []
   const vLabels: string[] = []
   const aLabels: string[] = []
   segments.forEach((seg, i) => {
-    const s = Math.max(0, seg.start - clipStart).toFixed(3)
-    const e = Math.max(0, seg.end - clipStart).toFixed(3)
-    parts.push(`[0:v]trim=start=${s}:end=${e},setpts=PTS-STARTPTS[vs${i}]`)
+    const input = separateInputs ? i : 0
+    const s = separateInputs ? '0' : Math.max(0, seg.start - clipStart).toFixed(3)
+    const e = (separateInputs ? seg.end - seg.start : Math.max(0, seg.end - clipStart)).toFixed(3)
+    parts.push(`[${input}:v]trim=start=${s}:end=${e},setpts=PTS-STARTPTS[vs${i}]`)
     vLabels.push(`[vs${i}]`)
     if (hasAudio) {
-      parts.push(`[0:a]atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS[as${i}]`)
+      parts.push(`[${input}:a]atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS[as${i}]`)
       aLabels.push(`[as${i}]`)
     }
   })
-  parts.push(`${vLabels.join('')}concat=n=${segments.length}:v=1:a=0[vcat]`)
-  if (hasAudio) parts.push(`${aLabels.join('')}concat=n=${segments.length}:v=0:a=1[acat]`)
+  if (hasAudio) parts.push(`${vLabels.map((v, i) => v + aLabels[i]).join('')}concat=n=${segments.length}:v=1:a=1[vcat][acat]`)
+  else parts.push(`${vLabels.join('')}concat=n=${segments.length}:v=1:a=0[vcat]`)
   return parts.join(';')
 }
 
@@ -438,7 +440,7 @@ export function buildFilterGraph(
   source: VideoInfo,
   assPath: string | null,
   clipDuration: number,
-  tighten: { segments: KeptSegment[]; clipStart: number } | null,
+  tighten: { segments: KeptSegment[]; clipStart: number; separateInputs?: boolean } | null,
   options?: {
     branding?: BrandingSettings | null
     fontsDirPath?: string
@@ -484,7 +486,7 @@ export function buildFilterGraph(
 
   let audioLabel: string | null = null
   if (tighten) {
-    parts.push(tightenGraph(tighten.segments, tighten.clipStart, source.hasAudio))
+    parts.push(tightenGraph(tighten.segments, tighten.clipStart, source.hasAudio, tighten.separateInputs))
     parts.push(reframeGraph(clip, source, 'vcat', focus, focusCommandsPath))
     if (source.hasAudio) {
       parts.push(`[acat]${audioChain(clipDuration, options?.loudness ?? null, options?.audioTailSec)}[aout]`)
@@ -506,7 +508,7 @@ export function buildFilterGraph(
   }
 
   items.forEach((item, i) => {
-    const input = i + 1
+    const input = i + (tighten?.separateInputs ? tighten.segments.length : 1)
     const s = Math.max(0, item.start - clip.edit.start)
     const e = Math.min(clipDuration, item.end - clip.edit.start)
     extraInputs.push('-loop', '1', '-t', clipDuration.toFixed(3), '-i', item.imagePath!)
@@ -538,7 +540,7 @@ export function buildFilterGraph(
 
   const branding = options?.branding
   if (branding?.enabled && branding.imagePath) {
-    const input = items.length + 1
+    const input = items.length + (tighten?.separateInputs ? tighten.segments.length : 1)
     extraInputs.push('-loop', '1', '-t', clipDuration.toFixed(3), '-i', branding.imagePath)
     const wmWidth = Math.max(2, Math.round(w * Math.min(0.5, Math.max(0.04, branding.scale))))
     const opacity = Math.min(1, Math.max(0.05, branding.opacity))
@@ -633,6 +635,9 @@ async function render(job: RenderJob): Promise<RenderResult> {
   // Tighten cuts: figure out the kept segments and remap everything that is
   // timed against the source (captions, B-roll, face track) into the
   // compacted output timeline.
+  if (clip.edit.sequence && clip.edit.autoZoom) {
+    throw new Error("Turn off Auto zoom before exporting an ordered sequence.")
+  }
   const segments = clipKeptSegments(clip, transcript)
   if (segments && segments.length === 0) {
     throw new Error('Nothing is left to export: every part of this clip has been cut. Undo a cut or widen the trim.')
@@ -645,23 +650,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
   let captionStart = start
   let captionEnd = clip.edit.end
   if (map && segments) {
-    effectiveClip = {
-      ...clip,
-      edit: { ...clip.edit, start: 0, end: outputDuration },
-      visualLayout: clip.visualLayout ? {
-        ...clip.visualLayout, start: 0, end: outputDuration,
-        shots: automaticLayoutShots(clip).map((shot) => ({ ...shot,
-          start: map.toOutput(Math.max(start, shot.start)),
-          end: map.toOutput(Math.min(clip.edit.end, shot.end))
-        })).filter((shot) => shot.end > shot.start)
-      } : undefined,
-      broll: clip.broll
-        .map((b) => ({ ...b, start: map.toOutput(b.start), end: map.toOutput(b.end) }))
-        .filter((b) => b.end - b.start > 0.6),
-      focusTrack: clip.focusTrack
-        ? clip.focusTrack.map((kf) => ({ ...kf, t: map.toOutput(kf.t) }))
-        : null
-    }
+    effectiveClip = remapClipTimeline(clip, map)
     if (transcript) {
       captionTranscript = remapTranscript(transcript, map, start, clip.edit.end)
       captionStart = 0
@@ -731,7 +720,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
     source,
     assPath,
     outputDuration,
-    segments ? { segments, clipStart: start } : null,
+    segments ? { segments, clipStart: start, separateInputs: Boolean(clip.edit.sequence) } : null,
     {
       branding: job.branding,
       fontsDirPath: job.fontsDirPath,
@@ -800,9 +789,9 @@ async function render(job: RenderJob): Promise<RenderResult> {
     audioCodec: string[]
     output: string[]
   }): string[] => [
-    '-ss', start.toFixed(3),
-    '-t', duration.toFixed(3),
-    '-i', source.path,
+    ...(segments && clip.edit.sequence
+      ? segments.flatMap(seg => ['-threads', '1', '-ss', seg.start.toFixed(3), '-t', (seg.end - seg.start).toFixed(3), '-i', source.path])
+      : ['-ss', start.toFixed(3), '-t', duration.toFixed(3), '-i', source.path]),
     ...graph.extraInputs,
     ...filterArgs,
     '-map', `[${videoLabel}]`,
