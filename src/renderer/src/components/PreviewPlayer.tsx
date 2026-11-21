@@ -8,6 +8,7 @@ import {
   groupWords,
   wordsInRange
 } from '@shared/captionLayout'
+import { outputJoins, transitionOpacity } from '@shared/transitions'
 import { remapClipTimeline } from '@shared/remapClip'
 import { clipKeptSegments, remapTranscript, TimeMap } from '@shared/tighten'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
@@ -210,6 +211,7 @@ export default function PreviewPlayer({
   const captionTranscript = useMemo(() => project.transcript && timeMap
     ? remapTranscript(project.transcript, timeMap, start, end) : project.transcript, [project.transcript, timeMap, start, end])
   const captionClip = useMemo(() => timeMap ? remapClipTimeline(clip, timeMap) : clip, [clip, timeMap])
+  const joins = useMemo(() => outputJoins(clip, project.transcript), [clip, project.transcript])
   const outputDuration = timeMap?.outputDuration ?? duration
   const outputTime = timeMap ? timeMap.toOutput(time) : Math.max(0, time - start)
 
@@ -273,7 +275,9 @@ export default function PreviewPlayer({
         // zoom stutter.
         // Do not display a frame from the source-neighbouring piece when a
         // seek landed a fraction of a millisecond before the selected start.
-        const displayTime = Math.max(timeMap?.segments[segmentIndexRef.current]?.start ?? start, smoothed.t)
+        const activeSpan = timeMap?.segments[segmentIndexRef.current]
+        const displayTime = Math.max(activeSpan?.start ?? start,
+          Math.min((activeSpan?.end ?? end) - 1e-7, smoothed.t))
         applyFrame(displayTime)
         if (Math.abs(displayTime - publishedRef.current) >= 1 / 30) {
           publishedRef.current = displayTime
@@ -368,6 +372,8 @@ export default function PreviewPlayer({
         {clip.edit.showTitle && !compositionHidesTitle(clip) && (clip.hook || clip.title) && outputTime < Math.min(4, outputDuration) && (
           <HookOverlay clip={clip} />
         )}
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-black"
+          style={{ opacity: transitionOpacity(joins, outputTime) }} />
         {!playing && (
           <button
             onClick={togglePlay}

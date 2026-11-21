@@ -15,6 +15,7 @@ import type {
 } from '@shared/types'
 import type { EncoderPreference } from '@shared/types'
 import { clipKeptSegments, remapTranscript, TimeMap, type KeptSegment } from '@shared/tighten'
+import { outputJoins, transitionFilters, type OutputJoin } from '@shared/transitions'
 import { remapClipTimeline } from '@shared/remapClip'
 import { focusPanDuration, focusSnaps } from '@shared/focusTrack'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
@@ -457,6 +458,7 @@ export function buildFilterGraph(
      */
     loudness?: LoudnessStats | null
     audioTailSec?: number
+    transitions?: OutputJoin[]
   }
 ): FilterGraph {
   const { w, h } = targetDims(clip.edit.aspect, source)
@@ -554,16 +556,20 @@ export function buildFilterGraph(
     current = 'wmk'
   }
 
+  const fades = transitionFilters(options?.transitions ?? [])
+  const composedLabel = fades.length ? 'beforeTransitions' : 'vout'
   // Square pixels: an even-rounded crop scaled to exact output dimensions
   // otherwise carries a sample aspect like 404:405 that players honour.
   if (assPath) {
     const fontsDirPath = options?.fontsDirPath ?? fontsDir()
     parts.push(
-      `[${current}]ass=filename='${escapeFilterPath(assPath)}':fontsdir='${escapeFilterPath(fontsDirPath)}',setsar=1[vout]`
+      `[${current}]ass=filename='${escapeFilterPath(assPath)}':fontsdir='${escapeFilterPath(fontsDirPath)}',setsar=1[${composedLabel}]`
     )
   } else {
-    parts.push(`[${current}]setsar=1[vout]`)
+    parts.push(`[${current}]setsar=1[${composedLabel}]`)
   }
+
+  if (fades.length) parts.push(`[beforeTransitions]${fades.join(',')}[vout]`)
 
   return {
     filterComplex: parts.join(';'),
@@ -727,7 +733,8 @@ async function render(job: RenderJob): Promise<RenderResult> {
       zoomEvents,
       focusCommandsPath,
       loudness,
-      audioTailSec: speechSafeFade(captionTranscript, captionStart, captionEnd)
+      audioTailSec: speechSafeFade(captionTranscript, captionStart, captionEnd),
+      transitions: outputJoins(clip, transcript)
     }
   )
   if (graph.focusCommands) await writeFile(focusCommandsPath, graph.focusCommands, 'utf8')

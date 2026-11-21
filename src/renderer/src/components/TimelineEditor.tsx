@@ -3,6 +3,7 @@ import { Redo2, Scissors, SplitSquareHorizontal, Trash2, Undo2 } from 'lucide-re
 import type { Clip, TimelineData, TimeRange } from '@shared/types'
 import { autoRemovedRanges, editedClipDuration, normalizeRanges, clipKeptSegments, TimeMap } from '@shared/tighten'
 import { cutRange, orderedPieces, movePiece, keepsPlayback, pieceAt, setTrimEdge, splitAt, timelinePieces, toggleRestored, uncutAt } from '@shared/editOps'
+import { outputJoins } from '@shared/transitions'
 import { historyState } from '@shared/editHistory'
 import { usePreviewBus } from '../lib/previewBus'
 import { useStore } from '../store'
@@ -43,6 +44,12 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
   const edit = clip.edit
   const map = new TimeMap(clipKeptSegments(clip, transcript) ?? [{ start: edit.start, end: edit.end }])
   const ordered = orderedPieces(edit).filter(p => map.segments.some(r => r.start < p.end && r.end > p.start))
+  const joins = outputJoins(clip, transcript)
+  const setTransition = (fromId: string, toId: string, duration: number): void => {
+    const transitions = (edit.transitions ?? []).filter(t => t.fromId !== fromId || t.toId !== toId)
+    if (duration > 0) transitions.push({ fromId, toId, kind: 'fade-black', duration })
+    onSave({ ...edit, transitions })
+  }
   const move = (id: string, before: string | null): void => {
     if (!edit.autoZoom) onSave(movePiece(edit, id, before))
     setDragged(null)
@@ -162,6 +169,7 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
             const spans = map.segments.filter(r => r.start < p.end && r.end > p.start)
             const frame = timeline?.frames[Math.max(0, Math.min(timeline.frames.length - 1,
               Math.floor((p.start - windowStart) / (windowEnd - windowStart) * timeline.frames.length)))]
+            const join = joins.find(j => j.fromId === p.id && j.toId === ordered[i + 1]?.id)
             const active = spans.some(r => time >= r.start && time < r.end)
             return <div key={p.id} className={`w-40 shrink-0 rounded border p-1 ${insertion === p.id ? 'border-l-4 border-amber-300' : active ? 'border-blue-400' : 'border-surface-600'}`}
               onDragOver={e => { e.preventDefault(); setInsertion(p.id) }}
@@ -179,6 +187,26 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
                 <button className={button} disabled={i === 0 || edit.autoZoom} onClick={() => move(p.id, ordered[i - 1].id)} aria-label={`Move segment ${i + 1} left`}>←</button>
                 <button className={button} disabled={i === ordered.length - 1 || edit.autoZoom} onClick={() => move(p.id, ordered[i + 2]?.id ?? null)} aria-label={`Move segment ${i + 1} right`}>→</button>
               </div>
+              {join && <details className="mt-2 border-t border-surface-600 pt-1 text-xs">
+                <summary className="cursor-pointer" aria-label={`Transition after segment ${i + 1}`}>
+                  ◇ {join.duration ? 'Fade through black' : 'Cut'} →
+                </summary>
+                <label className="mt-2 block">Transition
+                  <select className="mt-1 w-full bg-surface-800" value={join.duration ? 'fade-black' : 'cut'}
+                    onChange={e => setTransition(join.fromId, join.toId, e.target.value === 'cut' ? 0 : Math.min(0.4, join.maxDuration))}>
+                    <option value="cut">None / Cut</option>
+                    <option value="fade-black" disabled={join.maxDuration < 0.1}>Fade through black</option>
+                  </select>
+                </label>
+                {join.duration > 0 && <label className="mt-2 block">Duration (seconds)
+                  <input aria-label={`Transition duration after segment ${i + 1}`} type="number" min={0.1} max={join.maxDuration}
+                    step="any" value={Number(join.duration.toFixed(3))} className="w-full bg-surface-800"
+                    onChange={e => { const value = e.target.valueAsNumber; if (Number.isFinite(value)) setTransition(join.fromId, join.toId, Math.max(0.1, Math.min(join.maxDuration, value))) }} />
+                </label>}
+                <p className="mt-1 text-zinc-500">{join.maxDuration < 0.1 ? 'Pieces are too short for a fade.' : `Maximum ${join.maxDuration.toFixed(2)} s for these pieces.`}</p>
+                <button type="button" className={button} onClick={() => usePreviewBus.getState().seek(map.toSource(Math.max(0, join.time - join.duration / 2)))}>Preview join</button>
+                <button type="button" className={button} onClick={() => setTransition(join.fromId, join.toId, 0)}>Reset to Cut</button>
+              </details>}
             </div>
           })}
           <div className={`min-w-12 self-stretch border-l-2 text-xs ${insertion === 'end' ? 'border-amber-300' : 'border-transparent'}`}
