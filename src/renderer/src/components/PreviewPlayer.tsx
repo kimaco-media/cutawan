@@ -1,3 +1,6 @@
+import ComposedJoin from './ComposedJoin'
+import { segmentCaptionRanges, segmentClip } from '@shared/segmentLayout'
+import { sequenceWithTrim } from '@shared/sequence'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Play, Pause, RotateCcw } from 'lucide-react'
 import type { Clip, Project, WatermarkPosition } from '@shared/types'
@@ -38,6 +41,7 @@ export default function PreviewPlayer({
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null)
   const zoomLayerRef = useRef<HTMLDivElement>(null)
+  const backdropRef = useRef<HTMLCanvasElement>(null)
   const overviewRef = useRef<HTMLCanvasElement>(null)
   const rafRef = useRef<number>(0)
   const publishedRef = useRef(-Infinity)
@@ -57,6 +61,7 @@ export default function PreviewPlayer({
    * a permanent `seeking` state (playback "randomly stopping").
    */
   const pendingSeekRef = useRef<number | null>(null)
+  const [mixedAudio, setMixedAudio] = useState(false)
   const [playing, setPlaying] = useState(false)
   const [time, setTimeState] = useState(clip.edit.start)
   const setBusTime = usePreviewBus((s) => s.setTime)
@@ -71,11 +76,30 @@ export default function PreviewPlayer({
     [setBusTime]
   )
 
+  const segmentPlans = useMemo(() => (sequenceWithTrim(clip.edit) ?? []).filter(p => p.layout).map(span => {
+    const resolved = segmentClip(clip, span)
+    const plan: PreviewFramePlan = { zoomEvents: null, focusTrack: null, framing: resolved.edit.framing,
+      manualFocusX: resolved.edit.focusX, isCrop: resolved.edit.aspect !== 'original' && resolved.edit.reframeMode === 'crop',
+      fitRanges: automaticLayoutShots(resolved).filter(s => s.mode === 'fit') }
+    return { span, plan, mode: resolved.edit.reframeMode }
+  }), [clip])
+  const segmentPlansRef = useRef(segmentPlans)
+  useEffect(() => { segmentPlansRef.current = segmentPlans }, [segmentPlans])
+  const clipModeRef = useRef(clip.edit.reframeMode)
+  useEffect(() => { clipModeRef.current = clip.edit.reframeMode }, [clip.edit.reframeMode])
   const applyFrame = useCallback((t: number): void => {
     const video = videoRef.current
     const layer = zoomLayerRef.current
     if (!video || !layer) return
-    applyPreviewVideoFrame(video, layer, previewPlanRef.current, t, overviewRef.current)
+    const segment = segmentPlansRef.current.find(({ span }) => t >= span.start && t < span.end)
+    const plan = segment?.plan ?? previewPlanRef.current
+    const backdrop = backdropRef.current
+    if (backdrop) {
+      const show = (segment?.mode ?? clipModeRef.current) === 'fit-blur' && video.readyState >= 2
+      backdrop.hidden = !show
+      if (show) backdrop.getContext('2d')?.drawImage(video, 0, 0, backdrop.width, backdrop.height)
+    }
+    applyPreviewVideoFrame(video, layer, plan, t, overviewRef.current)
   }, [])
 
   const sequenceMapRef = useRef<TimeMap | null>(null)
@@ -211,11 +235,19 @@ export default function PreviewPlayer({
   const captionTranscript = useMemo(() => project.transcript && timeMap
     ? remapTranscript(project.transcript, timeMap, start, end) : project.transcript, [project.transcript, timeMap, start, end])
   const captionClip = useMemo(() => timeMap ? remapClipTimeline(clip, timeMap) : clip, [clip, timeMap])
+  const captionRanges = useMemo(() => timeMap && clip.edit.sequence?.some(p => p.layout)
+    ? segmentCaptionRanges(clip, timeMap) : detailCaptionRanges(captionClip), [timeMap, clip, captionClip])
   const joins = useMemo(() => outputJoins(clip, project.transcript), [clip, project.transcript])
   const baseTimeMap = useMemo(() => keptSegments ? new TimeMap(keptSegments) : null, [keptSegments])
   const titleTime = baseTimeMap ? baseTimeMap.toOutput(time) : time - start
   const outputDuration = timeMap?.outputDuration ?? duration
   const outputTime = timeMap ? timeMap.toOutput(time) : Math.max(0, time - start)
+
+  const branding = useStore(s => s.settings?.branding)
+  const mixedLayouts = segmentPlans.length > 0
+  const nearbyJoin = mixedLayouts ? joins.filter(j => j.overlap > 0 && Math.abs(j.time - outputTime) < 3)
+    .sort((a, b) => Math.abs(a.time - outputTime) - Math.abs(b.time - outputTime))[0] : undefined
+  const joinKey = useMemo(() => JSON.stringify([clip, project.transcript, branding, project.video]), [clip, project.transcript, branding, project.video])
 
   // Mirrors the export's auto-zoom plan (same shared generator), including the
   // trim the export has to make when a plan outgrows one ffmpeg expression.
@@ -227,7 +259,7 @@ export default function PreviewPlayer({
 
   const src = window.cutawan.mediaUrl(project.video.path)
   const isCrop = clip.edit.aspect !== 'original' && clip.edit.reframeMode === 'crop'
-  const isFitBlur = clip.edit.aspect !== 'original' && clip.edit.reframeMode === 'fit-blur'
+  const isFitBlur = clip.edit.aspect !== 'original' && (segmentPlans.find(({ span }) => time >= span.start && time < span.end)?.mode ?? clip.edit.reframeMode) === 'fit-blur'
 
   useEffect(() => {
     previewPlanRef.current = {
@@ -334,7 +366,10 @@ export default function PreviewPlayer({
       >
         <div className="absolute inset-0 will-change-transform"
           style={{ transform: `scale(${transitionZoom(joins, outputTime)})`, transformOrigin: '50% 50%' }}>
-        {isFitBlur && clip.thumbnailPath && (
+        {mixedLayouts && clip.edit.aspect !== 'original' && <canvas ref={backdropRef} hidden width={240}
+          height={Math.max(2, Math.round(240 * project.video.height / project.video.width))}
+          className="absolute inset-0 h-full w-full scale-110 object-cover blur-xl brightness-75" />}
+        {!mixedLayouts && isFitBlur && clip.thumbnailPath && (
           <img
             src={window.cutawan.mediaUrl(clip.thumbnailPath)}
             alt=""
@@ -343,6 +378,7 @@ export default function PreviewPlayer({
         )}
         <div ref={zoomLayerRef} className="absolute inset-0 will-change-transform" onClick={togglePlay}>
           <video
+            muted={mixedAudio}
             ref={videoRef}
             src={src}
             poster={clip.thumbnailPath ? window.cutawan.mediaUrl(clip.thumbnailPath) : undefined}
@@ -369,6 +405,7 @@ export default function PreviewPlayer({
         {clip.edit.captionsEnabled && captionTranscript && (
           <CaptionOverlay
             transcript={captionTranscript}
+            positionRanges={captionRanges}
             clip={captionClip}
             time={outputTime}
             aspectRatio={aspectStyle}
@@ -380,6 +417,8 @@ export default function PreviewPlayer({
         </div>
         <div aria-hidden="true" className="pointer-events-none absolute inset-0 bg-black"
           style={{ opacity: transitionOpacity(joins, outputTime) }} />
+        {nearbyJoin && <ComposedJoin key={joinKey + nearbyJoin.fromId} clip={clip} projectId={project.id} join={nearbyJoin}
+          time={outputTime} playing={playing} source={videoRef} setMixedAudio={setMixedAudio} />}
         {!playing && (
           <button
             onClick={togglePlay}
@@ -392,7 +431,7 @@ export default function PreviewPlayer({
         )}
       </div>
 
-      {joins.some(join => join.overlap > 0) && <p className="max-w-md text-xs text-amber-200">
+      {!mixedLayouts && joins.some(join => join.overlap > 0) && <p className="max-w-md text-xs text-amber-200">
         Dissolve, slides and Whip pan use a rendered join preview. Open the ◇ marker and choose “Render join preview”
         to see and scrub the actual blend with audio; this source preview shows the cut.
       </p>}
@@ -526,11 +565,13 @@ function BrollOverlay({ clip, time }: { clip: Clip; time: number }): React.JSX.E
 }
 
 function CaptionOverlay({
+  positionRanges,
   transcript,
   clip,
   time,
   aspectRatio
 }: {
+  positionRanges: ReturnType<typeof detailCaptionRanges>
   transcript: NonNullable<Project['transcript']>
   clip: Clip
   time: number
@@ -565,7 +606,7 @@ function CaptionOverlay({
   return (
     <div
       className="pointer-events-none absolute inset-x-0 flex flex-col items-center text-center"
-      style={{ top: `${captionPositionAt(detailCaptionRanges(clip), time, style.positionY) * 100}cqh`, transform: 'translateY(-50%)' }}
+      style={{ top: `${captionPositionAt(positionRanges, time, style.positionY) * 100}cqh`, transform: 'translateY(-50%)' }}
     >
       {group.lines.map((line, li) => (
         <div

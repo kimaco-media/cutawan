@@ -77,7 +77,7 @@ function validGamingComposition(c: Composition): boolean {
   const [presenter, content] = c.layers
   const split = presenter?.target?.height
   if (presenter?.role !== 'presenter' || content?.role !== 'content' ||
-    !validRectangle(presenter.source) || !validRectangle(content.source) ||
+    !validRectangle(presenter.source) || !validRectangle(content.source) || !validRectangle(presenter.target) || !validRectangle(content.target) ||
     !near(presenter.target.x, 0) || !near(presenter.target.y, 0) || !near(presenter.target.width, 1) ||
     !near(content.target.x, 0) || !near(content.target.width, 1) ||
     !near(content.target.y, split) || !near(content.target.height, 1 - split) ||

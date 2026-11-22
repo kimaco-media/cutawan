@@ -93,8 +93,8 @@ export function playbackTimeMap(clip: Pick<Clip, 'edit' | 'visualStory'>, transc
 export function joinPreviewClip(clip: Clip, join: OutputJoin): Clip {
   const tail = Math.min(join.leftDuration, join.duration * 2 + 0.35)
   const head = Math.min(join.rightDuration, join.duration * 2 + 0.35)
-  const left = { id: join.fromId, start: join.leftSourceEnd - tail, end: join.leftSourceEnd }
-  const right = { id: join.toId, start: join.rightSourceStart, end: join.rightSourceStart + head }
+  const left = { layout: clip.edit.sequence?.find(p => p.id === join.fromId)?.layout, id: join.fromId, start: join.leftSourceEnd - tail, end: join.leftSourceEnd }
+  const right = { layout: clip.edit.sequence?.find(p => p.id === join.toId)?.layout, id: join.toId, start: join.rightSourceStart, end: join.rightSourceStart + head }
   return { ...clip, edit: { ...clip.edit, start: Math.min(left.start, right.start), end: Math.max(left.end, right.end),
     sequence: [left, right], cuts: [], restored: [], splits: [], tightenCuts: false, autoZoom: false,
     transitions: join.kind === 'cut' ? [] : [{ fromId: left.id, toId: right.id, kind: join.kind, duration: join.duration }] } }

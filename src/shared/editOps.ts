@@ -19,7 +19,7 @@ export function splitAt(edit: ClipEditState, t: number): ClipEditState {
   const splits = edit.splits ?? []
   if (splits.some(s => Math.abs(s - t) < SPLIT_TOLERANCE_SEC)) return edit
   const sequence = sequenceWithTrim(edit)?.flatMap(p => t > p.start + SPLIT_TOLERANCE_SEC && t < p.end - SPLIT_TOLERANCE_SEC
-    ? [{ ...p, end: t }, { ...p, id: `${p.id}@${t}`, start: t }] : [p])
+    ? [{ ...p, end: t }, { ...p, id: `${p.id}@${t}`, start: t, ...(p.layout ? { layout: structuredClone(p.layout) } : {}) }] : [p])
   return { ...edit, splits: [...splits, t].sort((a, b) => a - b), ...(sequence ? { sequence } : {}) }
 }
 
@@ -37,7 +37,10 @@ export function pieceAt(edit: ClipEditState, t: number): TimeRange | undefined {
 
 /** Remove a source range from playback (ripple: later material closes the gap). */
 export function cutRange(edit: ClipEditState, range: TimeRange): ClipEditState {
-  return { ...edit, cuts: normalizeRanges([...(edit.cuts ?? []), range], edit.start, edit.end) }
+  const cuts = normalizeRanges([...(edit.cuts ?? []), range], edit.start, edit.end)
+  const sequence = edit.sequence?.map(piece => piece.layout && cuts.some(c => c.start <= piece.start && c.end >= piece.end)
+    ? { ...piece, layout: undefined } : piece)
+  return { ...edit, cuts, ...(sequence ? { sequence } : {}) }
 }
 
 /** Put back the user cut containing `t`. */
@@ -90,6 +93,20 @@ export function keepsPlayback(clip: Pick<Clip, 'edit' | 'visualStory'>, transcri
 /** Lazily migrate source-order projects without changing their saved edits. */
 export function orderedPieces(edit: ClipEditState): NonNullable<ClipEditState['sequence']> {
   return sequenceWithTrim(edit) ?? timelinePieces(edit).map(p => ({ ...p, id: `source:${p.start}` }))
+}
+
+/** Resolve a source-timeline click to the same stable ID used by the output thumbnails. */
+export function pieceIdAt(edit: ClipEditState, time: number): string | null {
+  if (time < edit.start || time > edit.end) return null
+  return orderedPieces(edit).find(piece => time === edit.end
+    ? piece.start < time && time <= piece.end
+    : piece.start <= time && time < piece.end)?.id ?? null
+}
+
+/** Keep the layout editor on the piece beginning at the razor point. */
+export function splitAndSelect(edit: ClipEditState, time: number) {
+  const next = splitAt(edit, time)
+  return next === edit ? null : { edit: next, selectedId: pieceIdAt(next, time) }
 }
 
 /** Move before an ID, or to the end. Source references and IDs stay unchanged. */

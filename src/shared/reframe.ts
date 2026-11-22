@@ -69,7 +69,9 @@ export function manualCropSupersedesAnalysis(clip: Clip): boolean {
 
 /** A user layout choice that fully determines the render without analysis. */
 export function userChoiceSupersedesAnalysis(clip: Clip): boolean {
-  return manualLayoutSupersedesAnalysis(clip) || manualCropSupersedesAnalysis(clip)
+  const visible = clip.edit.sequence?.filter(p => p.start < clip.edit.end && p.end > clip.edit.start)
+  return Boolean(visible?.length && visible.every(p => p.layout)) ||
+    manualLayoutSupersedesAnalysis(clip) || manualCropSupersedesAnalysis(clip)
 }
 
 /** Whether a clip still needs its reframe analysis before it is fully framed. */

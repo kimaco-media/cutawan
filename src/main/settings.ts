@@ -1,3 +1,4 @@
+import { normalizeProfiles } from '@shared/segmentLayout'
 import { DEFAULT_SUBSCRIPTION, normalizeSubscription, type SubscriptionSettings } from '@shared/subscription'
 import { configureSubscription } from './subscription'
 import { app, safeStorage } from 'electron'
@@ -21,6 +22,7 @@ import { DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENROUTER_TRANSCRIPTION_MODEL, isSup
 
 
 interface StoredSettings {
+  gamingProfiles?: AppSettings['gamingProfiles']
   setupComplete: boolean
   subscription: SubscriptionSettings
   /** Base64 of safeStorage-encrypted key, or plain 'plain:'-prefixed fallback. */
@@ -127,6 +129,7 @@ function load(): StoredSettings {
         openRouterTranscriptionModel: supportedTranscriptionModel(parsed.openRouterTranscriptionModel),
         // Nested objects: merge so settings saved before new fields stay valid.
         sizeTargetMb: normalizeSizeTargetMb(parsed.sizeTargetMb),
+        gamingProfiles: normalizeProfiles(parsed.gamingProfiles),
         branding: {
           ...DEFAULT_BRANDING,
           ...(parsed.branding ?? {}),
@@ -225,6 +228,7 @@ export async function getSettings(): Promise<AppSettings> {
     quality: s.quality,
     sizeTargetMb: s.sizeTargetMb,
     gpu: await getGpuStatus(),
+    gamingProfiles: s.gamingProfiles ?? [],
     branding: s.branding,
     brandVoice: s.brandVoice,
     appVersion: app.getVersion(),
@@ -314,6 +318,7 @@ export async function updateSettings(update: SettingsUpdate): Promise<AppSetting
   if (update.encoder !== undefined) s.encoder = update.encoder
   if (update.quality !== undefined) s.quality = update.quality
   if (update.sizeTargetMb !== undefined) s.sizeTargetMb = normalizeSizeTargetMb(update.sizeTargetMb)
+  if (update.gamingProfiles !== undefined) s.gamingProfiles = normalizeProfiles(update.gamingProfiles)
   if (update.branding !== undefined) {
     const b = update.branding
     s.branding = {
