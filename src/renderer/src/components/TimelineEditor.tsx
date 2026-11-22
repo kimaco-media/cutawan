@@ -1,9 +1,9 @@
 import SegmentLayoutControls from './SegmentLayoutControls'
 import { useEffect, useMemo, useState } from 'react'
 import { Redo2, Scissors, SplitSquareHorizontal, Trash2, Undo2 } from 'lucide-react'
-import type { Clip, TimelineData, TimeRange } from '@shared/types'
+import type { Clip, TimelineData } from '@shared/types'
 import { autoRemovedRanges, normalizeRanges } from '@shared/tighten'
-import { cutRange, orderedPieces, movePiece, keepsPlayback, pieceAt, setTrimEdge, splitAt, timelinePieces, toggleRestored, uncutAt } from '@shared/editOps'
+import { cutRange, orderedPieces, movePiece, keepsPlayback, pieceIdAt, setTrimEdge, splitAndSelect, toggleRestored, uncutAt } from '@shared/editOps'
 import { allowsTransitionSpeechOverlap, outputJoins, playbackTimeMap, TRANSITION_NAMES, isOverlap, parseTransitionDuration, type TransitionKind } from '@shared/transitions'
 import { historyState } from '@shared/editHistory'
 import { usePreviewBus } from '../lib/previewBus'
@@ -41,14 +41,14 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
   const redo = useStore((s) => s.redo)
   useStore((s) => s.historyVersion) // re-render undo/redo availability
   const { canUndo, canRedo } = historyState(clip.id)
-  const [selected, setSelected] = useState<TimeRange | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [dragged, setDragged] = useState<string | null>(null)
   const [insertion, setInsertion] = useState<string | null>(null)
   const time = usePreviewBus(s => s.time)
   const edit = clip.edit
   const map = useMemo(() => playbackTimeMap(clip, transcript), [clip, transcript])
-  const ordered = orderedPieces(edit).filter(p => map.segments.some(r => r.start < p.end && r.end > p.start))
+  const pieces = orderedPieces(edit)
+  const ordered = pieces.filter(p => map.segments.some(r => r.start < p.end && r.end > p.start))
   const selectedPiece = ordered.find(p => p.id === selectedId)
   const joins = useMemo(() => outputJoins(clip, transcript), [clip, transcript])
   const previewKey = useMemo(() => JSON.stringify([clip, transcript, project?.video, branding]), [clip, transcript, project?.video, branding])
@@ -74,20 +74,16 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
     ]
   }, [clip, transcript, edit.restored, edit.cuts, edit.start, edit.end, edit.tightenCuts])
 
-  const pieces = timelinePieces(edit)
-  // A selection only means something once the timeline has been split, and
-  // only while it is still exactly one of the current pieces (a split, trim
-  // or undo since the click would otherwise leave a stale range to cut).
-  const selection = selected && pieces.length > 1 &&
-    pieces.some((p) => Math.abs(p.start - selected.start) < 1e-6 && Math.abs(p.end - selected.end) < 1e-6)
-    ? selected : null
+  const selection = selectedPiece && pieces.length > 1
+    ? { start: Math.max(edit.start, selectedPiece.start), end: Math.min(edit.end, selectedPiece.end) }
+    : null
 
   const cutSelected = (): void => {
     if (!selection) return
     const next = cutRange(edit, selection)
     // Never cut away everything that plays.
     if (keepsPlayback({ ...clip, edit: next }, transcript)) onSave(next)
-    setSelected(null)
+    setSelectedId(null)
   }
   // Trims and re-removed pauses go through the same guard as cuts: they could
   // otherwise leave nothing to play.
@@ -95,8 +91,10 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
     if (keepsPlayback({ ...clip, edit: next }, transcript)) onSave(next)
   }
   const split = (): void => {
-    const next = splitAt(edit, usePreviewBus.getState().time)
-    if (next !== edit) onSave(next)
+    const result = splitAndSelect(edit, usePreviewBus.getState().time)
+    if (!result) return
+    onSave(result.edit)
+    setSelectedId(result.selectedId)
   }
 
   useEffect(() => {
@@ -128,7 +126,7 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
       else if (key === 'o') saveTrim(setTrimEdge(edit, 'end', Math.min(windowEnd, bus.time)))
       else if (key === 's') split()
       else if (key === 'delete' || key === 'backspace') cutSelected()
-      else if (key === 'escape') setSelected(null)
+      else if (key === 'escape') setSelectedId(null)
       else handled = false
       if (handled) e.preventDefault()
     }
@@ -158,7 +156,7 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
         marks={marks}
         splits={edit.splits}
         selected={selection}
-        onPieceClick={(t) => setSelected(pieceAt(edit, t) ?? null)}
+        onPieceClick={(t) => setSelectedId(pieceIdAt(edit, t))}
         playsFor={map.outputDuration}
         onMarkClick={(mark) => {
           if (mark.kind === 'cut') onSave(uncutAt(edit, (mark.range.start + mark.range.end) / 2))
@@ -195,7 +193,7 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
                 onDragStart={e => { e.dataTransfer.setData('text/plain', p.id); e.dataTransfer.effectAllowed = 'move'; setDragged(p.id) }}
                 onDragEnd={() => { setDragged(null); setInsertion(null) }}
                 aria-pressed={selectedId === p.id}
-                onClick={() => { setSelectedId(p.id); setSelected({ start: Math.max(edit.start, p.start), end: Math.min(edit.end, p.end) }); usePreviewBus.getState().seek(spans[0].start) }}>
+                onClick={() => { setSelectedId(p.id); usePreviewBus.getState().seek(spans[0].start) }}>
                 {frame && <img src={window.cutawan.mediaUrl(frame)} className="h-16 w-full object-cover" draggable={false} />}
                 {i + 1}. Source {p.start.toFixed(2)}–{p.end.toFixed(2)} s<br />
                 {p.layout ? p.layout.composition?.preset ?? p.layout.mode : 'Clip default'} {p.layout?.profileName} · {p.layout ? 'Custom' : 'Inherited'}<br />
@@ -255,7 +253,7 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
         </div>
         {selectedPiece && project && <SegmentLayoutControls key={selectedPiece.id} piece={selectedPiece} clip={clip}
           source={project.video} position={map.mapRange(selectedPiece)[0]?.start ?? 0}
-          onChange={layout => onSave({ ...edit, sequence: orderedPieces(edit).map(p => p.id === selectedId ? { ...p, layout } : p) })} />}
+          onChange={layout => onSave({ ...edit, sequence: pieces.map(p => p.id === selectedId ? { ...p, layout } : p) })} />}
         <p className="text-[10px] text-zinc-500">Drag a thumbnail before a segment, or use Move left/right. Select a piece, then S to split or Delete to remove. Arrow keys step through output.</p>
       </section>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">

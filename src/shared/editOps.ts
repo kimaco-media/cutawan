@@ -95,6 +95,20 @@ export function orderedPieces(edit: ClipEditState): NonNullable<ClipEditState['s
   return sequenceWithTrim(edit) ?? timelinePieces(edit).map(p => ({ ...p, id: `source:${p.start}` }))
 }
 
+/** Resolve a source-timeline click to the same stable ID used by the output thumbnails. */
+export function pieceIdAt(edit: ClipEditState, time: number): string | null {
+  if (time < edit.start || time > edit.end) return null
+  return orderedPieces(edit).find(piece => time === edit.end
+    ? piece.start < time && time <= piece.end
+    : piece.start <= time && time < piece.end)?.id ?? null
+}
+
+/** Keep the layout editor on the piece beginning at the razor point. */
+export function splitAndSelect(edit: ClipEditState, time: number) {
+  const next = splitAt(edit, time)
+  return next === edit ? null : { edit: next, selectedId: pieceIdAt(next, time) }
+}
+
 /** Move before an ID, or to the end. Source references and IDs stay unchanged. */
 export function movePiece(edit: ClipEditState, id: string, before: string | null): ClipEditState {
   const sequence = orderedPieces(edit)

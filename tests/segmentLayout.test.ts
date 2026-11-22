@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest'
 import { gamingComposition } from '@shared/composition'
-import { movePiece, splitAt } from '@shared/editOps'
+import { movePiece, orderedPieces, pieceIdAt, splitAndSelect, splitAt } from '@shared/editOps'
 import { segmentClip, normalizeProfiles } from '@shared/segmentLayout'
 import type { Clip } from '@shared/types'
 
@@ -24,4 +24,22 @@ it('loads named local profiles and discards malformed or duplicate entries', () 
   expect(normalizeProfiles(JSON.parse(JSON.stringify([valid, { ...valid, name: 'reaction' }, null,
     { ...valid, composition: {} }])))).toEqual([valid])
   expect(normalizeProfiles(undefined)).toEqual([])
+})
+
+it('targets the new right-hand segment when applying a saved profile after a second split', () => {
+  const initial = { start: 0, end: 9 } as Clip['edit']
+  const first = splitAndSelect(initial, 3)!
+  const pieces = orderedPieces(first.edit)
+  const profiles = ['Profil1', 'Profil2'].map((name, i) => ({
+    mode: 'crop' as const, focusX: .5, profileName: name,
+    composition: gamingComposition(composition.layers[0].source, composition.layers[1].source, i ? .35 : .25)!
+  }))
+  const edit = { ...first.edit, sequence: pieces.map((p, i) => ({ ...p, layout: profiles[i] })) }
+  const second = splitAndSelect(edit, 6)!
+  expect(second.selectedId).toBe(second.edit.sequence![2].id)
+  expect(pieceIdAt(second.edit, 6.5)).toBe(second.selectedId)
+  expect(second.edit.sequence![2].layout).toEqual(profiles[1])
+  const applied = second.edit.sequence!.map(p => p.id === second.selectedId ? profiles[0] : p.layout)
+  expect(applied).toEqual([profiles[0], profiles[1], profiles[0]])
+  expect(splitAndSelect(second.edit, 6)).toBeNull()
 })
