@@ -27,7 +27,7 @@ export interface OutputJoin {
   rightDuration: number
 }
 
-/** Overlap effects consume only verified speech-free tails/heads. Point effects
+/** Overlap effects protect speech unless the user explicitly allows mixing it. Point effects
  * keep duration unchanged. Transitions belong to adjacent retained IDs; a
  * broken adjacency stays dormant and rejoining the same IDs restores it. */
 export function outputJoins(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): OutputJoin[] {
@@ -49,7 +49,14 @@ export function outputJoins(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript
       if (word.start < leftEnd && word.end > leftEnd - leftDuration) silentTail = Math.min(silentTail, Math.max(0, leftEnd - word.end - 0.05))
       if (word.end > rightStart && word.start < rightStart + rightDuration) silentHead = Math.min(silentHead, Math.max(0, word.start - rightStart - 0.05))
     }
-    const maxOverlap = transcript ? Math.floor(Math.max(0, Math.min(1.5, leftDuration / 2, rightDuration / 2, silentTail, silentHead)) * 1000) / 1000 : 0
+    const protectSpeech = !clip.edit.allowTransitionSpeechOverlap
+    const limit = Math.min(1.5, leftDuration / 2, rightDuration / 2,
+      protectSpeech ? silentTail : Infinity, protectSpeech ? silentHead : Infinity)
+    const maxOverlap = !protectSpeech || transcript ? Math.floor(Math.max(0, limit) * 1000 + 1e-6) / 1000 : 0
+    const overlapReason = maxOverlap >= 0.1 ? undefined
+      : Math.min(leftDuration, rightDuration) < 0.2 ? 'Adjacent pieces need at least 0.2 s for an overlapping transition.'
+        : !transcript ? 'No transcript: enable “Allow transitions over speech” to use these transitions.'
+          : 'No pause on both sides: enable “Allow transitions over speech” to use these transitions.'
     const saved = clip.edit.transitions?.find(t => t.fromId === left.id && t.toId === right.id && Object.hasOwn(TRANSITION_NAMES, t.kind))
     const kind = saved?.kind ?? 'cut'
     const maxDuration = isOverlap(kind) ? maxOverlap : maxPoint
@@ -59,7 +66,7 @@ export function outputJoins(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript
     const time = head.start - removed - overlap / 2
     removed += overlap
     return { fromId: left.id, toId: right.id, kind, time, baseTime: head.start, maxDuration, duration, overlap, maxPoint, maxOverlap,
-      overlapReason: !transcript ? 'A transcript is required to protect speech during overlaps.' : maxOverlap < 0.1 ? 'Not enough speech-free footage on both sides (minimum 0.1 s).' : undefined,
+      overlapReason,
       leftSourceEnd: leftEnd, rightSourceStart: rightStart, leftDuration, rightDuration }
   })
 }

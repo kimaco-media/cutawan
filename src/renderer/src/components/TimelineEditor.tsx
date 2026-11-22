@@ -169,6 +169,14 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
           onChange={e => usePreviewBus.getState().seek(map.toSource(Number(e.target.value)))} />
         {edit.autoZoom && <p className="text-xs text-amber-300">Reordering requires Auto zoom to be off: zoom curves cannot yet cross reordered joins.
           <button className={button} onClick={() => onSave({ ...edit, autoZoom: false })}>Turn off Auto zoom</button></p>}
+        <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
+          <input type="checkbox" checked={edit.allowTransitionSpeechOverlap ?? false}
+            onChange={e => onSave({ ...edit, allowTransitionSpeechOverlap: e.target.checked })} />
+          Allow transitions over speech
+        </label>
+        <p className="mt-1 text-[10px] text-zinc-500">{edit.allowTransitionSpeechOverlap
+          ? 'Dissolve, slides and Whip pan can mix voices and subtitles during the overlap. Preview the join before exporting.'
+          : 'Speech protection is on. Without a pause on both sides, Dissolve, slides and Whip pan are disabled. Enable the option above to allow them.'}</p>
         <div className="flex gap-2 overflow-x-auto py-2" onDragOver={e => e.preventDefault()}>
           {ordered.map((p, i) => {
             const spans = map.segments.filter(r => r.start < p.end && r.end > p.start)

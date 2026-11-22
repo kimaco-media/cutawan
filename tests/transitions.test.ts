@@ -63,6 +63,32 @@ describe('transition timeline', () => {
     expect(editedClipDuration(clip, null)).toBe(12)
   })
 
+  it('lets users enable transitions during speech or without a transcript, with undo and persistence', () => {
+    clearHistory()
+    const original = transitionClip()
+    trackClip(original)
+    const clip = { ...original, edit: { ...original.edit, allowTransitionSpeechOverlap: true } }
+    recordSave(clip)
+    const speech = { ...silent, speech: [{ start: 0, end: 12 }] }
+    expect(outputJoins(clip, speech)[0].overlap).toBe(0.8)
+    expect(outputJoins(clip, null)[0].overlap).toBe(0.8)
+    expect(outputJoins(clip, null)[0].overlapReason).toBeUndefined()
+    expect(outputJoins(JSON.parse(JSON.stringify(clip)), null)[0].overlap).toBe(0.8)
+    expect(outputJoins(undo(clip)!, null)[0].overlap).toBe(0)
+    const preview = joinPreviewClip(clip, outputJoins(clip, null)[0])
+    expect(outputJoins(preview, null)[0].overlap).toBe(0.8)
+    expect(editedClipDuration(clip, null)).toBeCloseTo(10.6)
+  })
+
+  it('still rejects too-short edges when speech overlap is allowed', () => {
+    const clip = transitionClip()
+    clip.edit.allowTransitionSpeechOverlap = true
+    clip.edit.cuts = [{ start: 0, end: 3.9 }]
+    const join = outputJoins(clip, null)[0]
+    expect(join.overlap).toBe(0)
+    expect(join.overlapReason).toContain('0.2 s')
+  })
+
   it('preserves adjacency through persistence, undo, reorder and split', () => {
     clearHistory()
     const clip = transitionClip()
