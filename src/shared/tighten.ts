@@ -1,3 +1,4 @@
+import { outputJoins } from './transitions'
 import { sequenceWithTrim } from './sequence'
 import { focusAt, focusPanDuration, focusSnaps } from './focusTrack'
 import type { FocusKeyframe, Clip, SpeechRegion, TimeRange, Transcript } from './types'
@@ -18,7 +19,8 @@ export interface KeptSegment {
 /** Actual playback length, after pause removal and the user's cuts. */
 export function editedClipDuration(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): number {
   const kept = clipKeptSegments(clip, transcript)
-  return kept ? kept.reduce((sum, range) => sum + range.end - range.start, 0) : clip.edit.end - clip.edit.start
+  const duration = kept ? kept.reduce((sum, range) => sum + range.end - range.start, 0) : clip.edit.end - clip.edit.start
+  return duration - outputJoins(clip, transcript).reduce((sum, join) => sum + join.overlap, 0)
 }
 
 /** Pieces shorter than this after cutting are dropped rather than flashed. */
@@ -229,9 +231,10 @@ const MEDIA_SEEK_TOLERANCE_SEC = 0.001
 export class TimeMap {
   private readonly offsets: number[] = []
 
-  constructor(readonly segments: KeptSegment[]) {
+  constructor(readonly segments: KeptSegment[], private readonly overlaps: number[] = []) {
     let acc = 0
-    for (const seg of segments) {
+    for (const [i, seg] of segments.entries()) {
+      acc -= overlaps[i] ?? 0
       this.offsets.push(acc)
       acc += seg.end - seg.start
     }
@@ -280,10 +283,19 @@ export class TimeMap {
     const seg = this.segments[index]
     if (seg && t >= seg.start - MEDIA_SEEK_TOLERANCE_SEC && t < seg.end) return { time: t, index }
     const next = seg ? (t >= seg.end ? (index + 1) % this.segments.length : index) : 0
-    return { time: this.segments[next]?.start ?? t, index: next }
+    const target = this.segments[next]
+    const skip = seg && t >= seg.end && next > 0 ? this.overlaps[next] ?? 0 : 0
+    return { time: target ? target.start + skip : t, index: next }
   }
 
-  /** Invert an output timestamp; at a cut, select the following kept frame. */
+  /** Both source clocks during a blend; no source range is duplicated. */
+  sourcesAt(t: number): Array<{ segmentIndex: number; sourceTime: number }> {
+    return this.segments.flatMap((segment, i) => t >= this.offsets[i] && t < this.offsets[i] + segment.end - segment.start
+      ? [{ segmentIndex: i, sourceTime: segment.start + t - this.offsets[i] }] : [])
+  }
+
+  /** Invert an output timestamp. During overlaps the source-only player follows
+   * the outgoing frame; the rendered preview blends both sourcesAt clocks. */
   toSource(t: number): number {
     for (let i = 0; i < this.segments.length; i++) {
       const segment = this.segments[i]

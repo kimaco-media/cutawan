@@ -15,6 +15,8 @@ import type {
 } from '@shared/types'
 import type { EncoderPreference } from '@shared/types'
 import { clipKeptSegments, remapTranscript, TimeMap, type KeptSegment } from '@shared/tighten'
+import { overlapGraph } from './transitionGraph'
+import { outputJoins, transitionFilters, type OutputJoin } from '@shared/transitions'
 import { remapClipTimeline } from '@shared/remapClip'
 import { focusPanDuration, focusSnaps } from '@shared/focusTrack'
 import { automaticLayoutShots, clipAllowsAutoZoom, compositionHidesTitle, detailCaptionRanges, layoutBlocksAutoZoom } from '@shared/contentType'
@@ -457,6 +459,7 @@ export function buildFilterGraph(
      */
     loudness?: LoudnessStats | null
     audioTailSec?: number
+    transitions?: OutputJoin[]
   }
 ): FilterGraph {
   const { w, h } = targetDims(clip.edit.aspect, source)
@@ -554,15 +557,29 @@ export function buildFilterGraph(
     current = 'wmk'
   }
 
+  const fades = transitionFilters(options?.transitions ?? [], source.fps)
+  const hasOverlap = options?.transitions?.some(j => j.overlap > 0)
+  const composedLabel = fades.length || hasOverlap ? 'beforeTransitions' : 'vout'
   // Square pixels: an even-rounded crop scaled to exact output dimensions
   // otherwise carries a sample aspect like 404:405 that players honour.
   if (assPath) {
     const fontsDirPath = options?.fontsDirPath ?? fontsDir()
     parts.push(
-      `[${current}]ass=filename='${escapeFilterPath(assPath)}':fontsdir='${escapeFilterPath(fontsDirPath)}',setsar=1[vout]`
+      `[${current}]ass=filename='${escapeFilterPath(assPath)}':fontsdir='${escapeFilterPath(fontsDirPath)}',setsar=1[${composedLabel}]`
     )
   } else {
-    parts.push(`[${current}]setsar=1[vout]`)
+    parts.push(`[${current}]setsar=1[${composedLabel}]`)
+  }
+
+  let finalVideo = composedLabel
+  if (fades.length) {
+    finalVideo = hasOverlap ? 'afterPointTransitions' : 'vout'
+    parts.push(`[beforeTransitions]${fades.join(',')}[${finalVideo}]`)
+  }
+  if (hasOverlap) {
+    const blend = overlapGraph(options?.transitions ?? [], clipDuration, source.fps, finalVideo, audioLabel)
+    parts.push(...blend.filters, `[${blend.video}]null[vout]`)
+    audioLabel = blend.audio
   }
 
   return {
@@ -592,6 +609,10 @@ export interface RenderJob {
    * decides the bitrate, and the encode is always CPU x264.
    */
   sizeTargetBytes?: number
+  /** Remaining global title time in a bounded join preview. */
+  titleDuration?: number
+  /** Bounded preview uses one-pass normalization on its own source spans. */
+  preview?: boolean
   onProgress?: (fraction: number) => void
   signal?: AbortSignal
 }
@@ -643,7 +664,9 @@ async function render(job: RenderJob): Promise<RenderResult> {
     throw new Error('Nothing is left to export: every part of this clip has been cut. Undo a cut or widen the trim.')
   }
   const map = segments ? new TimeMap(segments) : null
-  const outputDuration = map ? map.outputDuration : duration
+  const baseDuration = map ? map.outputDuration : duration
+  const joins = outputJoins(clip, transcript)
+  const outputDuration = baseDuration - joins.reduce((sum, j) => sum + j.overlap, 0)
 
   let effectiveClip = clip
   let captionTranscript = transcript
@@ -654,7 +677,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
     if (transcript) {
       captionTranscript = remapTranscript(transcript, map, start, clip.edit.end)
       captionStart = 0
-      captionEnd = outputDuration
+      captionEnd = baseDuration
     }
   }
 
@@ -680,6 +703,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
       clipStart: captionStart,
       clipEnd: captionEnd,
       title: clip.edit.showTitle && !compositionHidesTitle(effectiveClip) ? clip.hook || clip.title : undefined,
+      titleDuration: job.titleDuration,
       fontFamily: clip.edit.captionFontFamily ?? undefined,
       brandColors: job.branding?.colors,
       positionRanges: detailCaptionRanges(effectiveClip)
@@ -703,7 +727,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
   // than a gain rider (see loudness.ts). Measured on the untightened span:
   // integrated loudness gates out silence anyway, so removing pauses changes
   // the reading by a fraction of a dB — not worth a second trim+concat graph.
-  const loudness = source.hasAudio
+  const loudness = source.hasAudio && !job.preview
     ? await timed('export/loudness', () => measureLoudness(source.path, start, duration, job.signal))
     : null
   if (process.env.CUTAWAN_DEBUG) {
@@ -719,7 +743,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
     effectiveClip,
     source,
     assPath,
-    outputDuration,
+    baseDuration,
     segments ? { segments, clipStart: start, separateInputs: Boolean(clip.edit.sequence) } : null,
     {
       branding: job.branding,
@@ -727,7 +751,8 @@ async function render(job: RenderJob): Promise<RenderResult> {
       zoomEvents,
       focusCommandsPath,
       loudness,
-      audioTailSec: speechSafeFade(captionTranscript, captionStart, captionEnd)
+      audioTailSec: speechSafeFade(captionTranscript, captionStart, captionEnd),
+      transitions: joins
     }
   )
   if (graph.focusCommands) await writeFile(focusCommandsPath, graph.focusCommands, 'utf8')

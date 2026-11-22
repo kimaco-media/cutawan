@@ -64,6 +64,8 @@ const api = {
   ): Promise<Project> =>
     ipcRenderer.invoke('project:updateTranscriptWord', projectId, segmentId, wordIndex, text),
 
+  transitionPreview: (projectId: string, clip: Clip, fromId: string, toId: string): Promise<string> =>
+    ipcRenderer.invoke('clip:transitionPreview', projectId, clip, fromId, toId),
   exportClip: (projectId: string, opts: ExportOptions): Promise<ExportResult> =>
     ipcRenderer.invoke('clip:export', projectId, opts),
   cancelExport: (clipId: string): Promise<void> => ipcRenderer.invoke('clip:cancelExport', clipId),

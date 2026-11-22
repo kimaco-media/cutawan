@@ -21,6 +21,7 @@ import { captionWholeVideo } from './pipeline/wholeVideo'
 import { downloadGpuFfmpeg } from './pipeline/encoders'
 import { probeVideo } from './pipeline/ffmpeg'
 import { getTimeline } from './pipeline/timeline'
+import { renderTransitionPreview } from './pipeline/transitionPreview'
 import { renderClip } from './pipeline/render'
 import { ensureClipReframe, supersedeClipReframe } from './pipeline/reframe'
 import { cancelBackgroundReframes, startBackgroundReframes } from './pipeline/backgroundReframe'
@@ -261,6 +262,14 @@ export function registerIpcHandlers(): void {
         delete clip.editorial
       }
     })
+  })
+
+  handle('clip:transitionPreview', async (_event, projectId: string, snapshot: Clip, fromId: string, toId: string) => {
+    const project = await loadProject(projectId)
+    if (!project.clips.some(c => c.id === snapshot.id)) throw new Error('Clip not found')
+    if (project.sourceMissing) throw new Error('Relink the source video before previewing transitions.')
+    return renderTransitionPreview(project, snapshot, fromId, toId,
+      join(app.getPath('userData'), 'timeline-cache', 'transitions'), getBrandingSettings(), await renderFontsDir())
   })
 
   handle('clip:export', async (event, projectId: string, opts: ExportOptions) => {
