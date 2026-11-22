@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Clip, Transcript } from '@shared/types'
-import { outputJoins, playbackTimeMap, joinPreviewClip, transitionOpacity, transitionZoom, transitionFilters, parseTransitionDuration } from '@shared/transitions'
+import { allowsTransitionSpeechOverlap, outputJoins, playbackTimeMap, joinPreviewClip, transitionOpacity, transitionZoom, transitionFilters, parseTransitionDuration } from '@shared/transitions'
 import { editedClipDuration, remapTranscript } from '@shared/tighten'
 import { movePiece, splitAt, cutRange } from '@shared/editOps'
 import { clearHistory, trackClip, recordSave, undo, redo } from '@shared/editHistory'
@@ -53,8 +53,24 @@ describe('transition timeline', () => {
     expect(words.map(w => Number(w.start.toFixed(2)))).toEqual([0.5, 4.2, 7.8])
   })
 
-  it('clamps overlap to speech-free handles and respects VAD and missing transcripts', () => {
+  it('enables overlap choices when reopening old projects without the new preference', () => {
+    const clip = JSON.parse(JSON.stringify(transitionClip())) as Clip
+    delete clip.edit.allowTransitionSpeechOverlap
+    expect(allowsTransitionSpeechOverlap(clip.edit)).toBe(true)
+    for (const transcript of [null, { ...silent, speech: [{ start: 0, end: 12 }] }]) {
+      const join = outputJoins(clip, transcript)[0]
+      expect(join.maxOverlap).toBeGreaterThanOrEqual(0.1)
+      expect(join.duration).toBe(0.8)
+      expect(join.overlapReason).toBeUndefined()
+    }
+    clip.edit.allowTransitionSpeechOverlap = false
+    expect(allowsTransitionSpeechOverlap(clip.edit)).toBe(false)
+    expect(outputJoins(clip, null)[0].maxOverlap).toBe(0)
+  })
+
+  it('clamps overlap to speech-free handles when protection is explicitly selected', () => {
     const clip = transitionClip()
+    clip.edit.allowTransitionSpeechOverlap = false
     expect(outputJoins(clip, null)[0].overlap).toBe(0)
     expect(outputJoins(clip, null)[0].overlapReason).toContain('transcript')
     const transcript = { ...silent, speech: [{ start: 2, end: 3.7 }, { start: 4.4, end: 5 }] }
@@ -66,6 +82,7 @@ describe('transition timeline', () => {
   it('lets users enable transitions during speech or without a transcript, with undo and persistence', () => {
     clearHistory()
     const original = transitionClip()
+    original.edit.allowTransitionSpeechOverlap = false
     trackClip(original)
     const clip = { ...original, edit: { ...original.edit, allowTransitionSpeechOverlap: true } }
     recordSave(clip)

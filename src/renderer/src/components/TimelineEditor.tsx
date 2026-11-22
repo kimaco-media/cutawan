@@ -3,7 +3,7 @@ import { Redo2, Scissors, SplitSquareHorizontal, Trash2, Undo2 } from 'lucide-re
 import type { Clip, TimelineData, TimeRange } from '@shared/types'
 import { autoRemovedRanges, normalizeRanges } from '@shared/tighten'
 import { cutRange, orderedPieces, movePiece, keepsPlayback, pieceAt, setTrimEdge, splitAt, timelinePieces, toggleRestored, uncutAt } from '@shared/editOps'
-import { outputJoins, playbackTimeMap, TRANSITION_NAMES, isOverlap, parseTransitionDuration, type TransitionKind } from '@shared/transitions'
+import { allowsTransitionSpeechOverlap, outputJoins, playbackTimeMap, TRANSITION_NAMES, isOverlap, parseTransitionDuration, type TransitionKind } from '@shared/transitions'
 import { historyState } from '@shared/editHistory'
 import { usePreviewBus } from '../lib/previewBus'
 import { useStore } from '../store'
@@ -170,11 +170,11 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
         {edit.autoZoom && <p className="text-xs text-amber-300">Reordering requires Auto zoom to be off: zoom curves cannot yet cross reordered joins.
           <button className={button} onClick={() => onSave({ ...edit, autoZoom: false })}>Turn off Auto zoom</button></p>}
         <label className="mt-2 flex items-center gap-2 text-xs text-zinc-300">
-          <input type="checkbox" checked={edit.allowTransitionSpeechOverlap ?? false}
+          <input type="checkbox" checked={allowsTransitionSpeechOverlap(edit)}
             onChange={e => onSave({ ...edit, allowTransitionSpeechOverlap: e.target.checked })} />
           Allow transitions over speech
         </label>
-        <p className="mt-1 text-[10px] text-zinc-500">{edit.allowTransitionSpeechOverlap
+        <p className="mt-1 text-[10px] text-zinc-500">{allowsTransitionSpeechOverlap(edit)
           ? 'Dissolve, slides and Whip pan can mix voices and subtitles during the overlap. Preview the join before exporting.'
           : 'Speech protection is on. Without a pause on both sides, Dissolve, slides and Whip pan are disabled. Enable the option above to allow them.'}</p>
         <div className="flex gap-2 overflow-x-auto py-2" onDragOver={e => e.preventDefault()}>

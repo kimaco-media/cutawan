@@ -9,6 +9,11 @@ export const TRANSITION_NAMES: Record<TransitionKind | 'cut', string> = {
 }
 export const isOverlap = (kind: string): boolean => ['dissolve', 'slide-left', 'slide-right', 'whip-pan'].includes(kind)
 
+/** Older projects have no flag. Only an explicitly disabled checkbox protects speech. */
+export function allowsTransitionSpeechOverlap(edit: Pick<ClipEditState, 'allowTransitionSpeechOverlap'>): boolean {
+  return edit.allowTransitionSpeechOverlap !== false
+}
+
 export interface OutputJoin {
   fromId: string
   toId: string
@@ -49,12 +54,12 @@ export function outputJoins(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript
       if (word.start < leftEnd && word.end > leftEnd - leftDuration) silentTail = Math.min(silentTail, Math.max(0, leftEnd - word.end - 0.05))
       if (word.end > rightStart && word.start < rightStart + rightDuration) silentHead = Math.min(silentHead, Math.max(0, word.start - rightStart - 0.05))
     }
-    const protectSpeech = !clip.edit.allowTransitionSpeechOverlap
+    const protectSpeech = !allowsTransitionSpeechOverlap(clip.edit)
     const limit = Math.min(1.5, leftDuration / 2, rightDuration / 2,
       protectSpeech ? silentTail : Infinity, protectSpeech ? silentHead : Infinity)
     const maxOverlap = !protectSpeech || transcript ? Math.floor(Math.max(0, limit) * 1000 + 1e-6) / 1000 : 0
     const overlapReason = maxOverlap >= 0.1 ? undefined
-      : Math.min(leftDuration, rightDuration) < 0.2 ? 'Adjacent pieces need at least 0.2 s for an overlapping transition.'
+      : Math.min(leftDuration, rightDuration) < 0.2 ? `Only ${leftDuration.toFixed(2)} s before / ${rightDuration.toFixed(2)} s after this join remains after cuts. At least 0.2 s on each side is needed; move the split or restore nearby cuts.`
         : !transcript ? 'No transcript: enable “Allow transitions over speech” to use these transitions.'
           : 'No pause on both sides: enable “Allow transitions over speech” to use these transitions.'
     const saved = clip.edit.transitions?.find(t => t.fromId === left.id && t.toId === right.id && Object.hasOwn(TRANSITION_NAMES, t.kind))

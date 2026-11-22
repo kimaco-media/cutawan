@@ -126,7 +126,7 @@ export interface ClipEditState {
   sequence?: Array<TimeRange & { id: string }>
   /** Opt-in transitions keyed by ordered adjacent segment IDs; missing means Cut. */
   transitions?: Array<{ fromId: string; toId: string; kind: 'fade-black' | 'zoom' | 'dissolve' | 'slide-left' | 'slide-right' | 'whip-pan'; duration: number }>
-  /** Explicit opt-in: overlapping transitions may mix speech, even without a transcript. */
+  /** Transitions may mix speech by default, including in older projects. False explicitly protects speech. */
   allowTransitionSpeechOverlap?: boolean
   /** Explicit framing choice, even when its values match generated defaults. */
   layoutChosen?: boolean
