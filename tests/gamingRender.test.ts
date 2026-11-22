@@ -112,3 +112,41 @@ it('burns captions onto the gameplay without reaching the facecam strip', async 
     expect(facecamText).toBe(0)
   } finally { await rm(dir, { recursive: true, force: true }) }
 }, 30000)
+
+it('composes reordered Gaming, manual crop and Gaming spans before a dissolve', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'cutawan-mixed-layout-'))
+  try {
+    const input = join(dir, 'input.mp4')
+    await runFfmpeg(['-f', 'lavfi', '-i', 'color=green:s=320x180:r=10:d=3',
+      '-vf', 'drawbox=x=0:y=0:w=64:h=180:color=red:t=fill,drawbox=x=256:y=0:w=64:h=180:color=blue:t=fill',
+      '-c:v', 'mpeg4', input])
+    const source = await probeVideo(input)
+    const game = { x: 0, y: 0, width: 1, height: 1 }
+    const gaming = (x: number, split: number) => ({ mode: 'crop' as const, focusX: .5,
+      composition: gamingComposition({ x, y: 0, width: .2, height: 1 }, game, split)! })
+    const clip: Clip = { id: 'mix', title: '', hook: '', summary: '', broll: [], focusTrack: null,
+      suggestedStart: 0, suggestedEnd: 3, viralityScore: 0, viralityReason: '', visualSummary: null,
+      hashtags: [], thumbnailPath: null, edit: { start: 0, end: 3, aspect: '9:16', framing: 'manual',
+        reframeMode: 'fit-letterbox', tightenCuts: false, focusX: .5, captionStyleId: 'clean', captionsEnabled: false, showTitle: false,
+        sequence: [{ id: 'a', start: 2, end: 3, layout: gaming(0, .25) },
+          { id: 'b', start: 0, end: 1, layout: { mode: 'crop', focusX: .5 } },
+          { id: 'c', start: 1, end: 2, layout: gaming(.8, .35) }],
+        allowTransitionSpeechOverlap: true, transitions: [{ fromId: 'a', toId: 'b', kind: 'dissolve', duration: .4 }] } }
+    const outputPath = join(dir, 'out.mp4')
+    await renderClip({ clip, source, transcript: null, outputPath, encoder: 'cpu', quality: 'draft' })
+    for (const [time, channel] of [[.2, 0], [.8, -1], [1.2, 1], [2.2, 2]]) {
+      const frame = join(dir, `frame-${time}.rgb`)
+      await runFfmpeg(['-ss', String(time), '-i', outputPath, '-vf', 'crop=8:8:540:100,scale=1:1',
+        '-frames:v', '1', '-pix_fmt', 'rgb24', '-f', 'rawvideo', frame])
+      const pixel = [...await readFile(frame)]
+      if (channel === -1) {
+        expect(pixel[0]).toBeGreaterThan(60)
+        expect(pixel[1]).toBeGreaterThan(25)
+        expect(pixel[2]).toBeLessThan(20)
+        continue
+      }
+      expect(pixel[channel]).toBeGreaterThan(90)
+      expect(pixel.indexOf(Math.max(...pixel))).toBe(channel)
+    }
+  } finally { await rm(dir, { recursive: true, force: true }) }
+}, 30000)

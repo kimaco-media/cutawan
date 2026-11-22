@@ -1,3 +1,4 @@
+import SegmentLayoutControls from './SegmentLayoutControls'
 import { useEffect, useMemo, useState } from 'react'
 import { Redo2, Scissors, SplitSquareHorizontal, Trash2, Undo2 } from 'lucide-react'
 import type { Clip, TimelineData, TimeRange } from '@shared/types'
@@ -41,12 +42,14 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
   useStore((s) => s.historyVersion) // re-render undo/redo availability
   const { canUndo, canRedo } = historyState(clip.id)
   const [selected, setSelected] = useState<TimeRange | null>(null)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [dragged, setDragged] = useState<string | null>(null)
   const [insertion, setInsertion] = useState<string | null>(null)
   const time = usePreviewBus(s => s.time)
   const edit = clip.edit
   const map = useMemo(() => playbackTimeMap(clip, transcript), [clip, transcript])
   const ordered = orderedPieces(edit).filter(p => map.segments.some(r => r.start < p.end && r.end > p.start))
+  const selectedPiece = ordered.find(p => p.id === selectedId)
   const joins = useMemo(() => outputJoins(clip, transcript), [clip, transcript])
   const previewKey = useMemo(() => JSON.stringify([clip, transcript, project?.video, branding]), [clip, transcript, project?.video, branding])
   const setTransition = (fromId: string, toId: string, duration: number, kind: TransitionKind = 'fade-black'): void => {
@@ -184,16 +187,18 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
               Math.floor((p.start - windowStart) / (windowEnd - windowStart) * timeline.frames.length)))]
             const join = joins.find(j => j.fromId === p.id && j.toId === ordered[i + 1]?.id)
             const active = spans.some(r => time >= r.start && time < r.end)
-            return <div key={p.id} className={`w-40 shrink-0 rounded border p-1 ${insertion === p.id ? 'border-l-4 border-amber-300' : active ? 'border-blue-400' : 'border-surface-600'}`}
+            return <div key={p.id} className={`w-40 shrink-0 rounded border p-1 ${insertion === p.id ? 'border-l-4 border-amber-300' : selectedId === p.id ? 'border-blue-400 bg-blue-950/40' : active ? 'border-zinc-400' : 'border-surface-600'}`}
               onDragOver={e => { e.preventDefault(); setInsertion(p.id) }}
               onDrop={e => { e.preventDefault(); if (dragged) move(dragged, p.id) }}>
               <button type="button" className="w-full text-left text-xs" draggable={!edit.autoZoom}
                 aria-label={`Select segment ${i + 1}: source ${p.start.toFixed(2)} to ${p.end.toFixed(2)} seconds`}
                 onDragStart={e => { e.dataTransfer.setData('text/plain', p.id); e.dataTransfer.effectAllowed = 'move'; setDragged(p.id) }}
                 onDragEnd={() => { setDragged(null); setInsertion(null) }}
-                onClick={() => { setSelected({ start: Math.max(edit.start, p.start), end: Math.min(edit.end, p.end) }); usePreviewBus.getState().seek(spans[0].start) }}>
+                aria-pressed={selectedId === p.id}
+                onClick={() => { setSelectedId(p.id); setSelected({ start: Math.max(edit.start, p.start), end: Math.min(edit.end, p.end) }); usePreviewBus.getState().seek(spans[0].start) }}>
                 {frame && <img src={window.cutawan.mediaUrl(frame)} className="h-16 w-full object-cover" draggable={false} />}
                 {i + 1}. Source {p.start.toFixed(2)}–{p.end.toFixed(2)} s<br />
+                {p.layout ? p.layout.composition?.preset ?? p.layout.mode : 'Clip default'} {p.layout?.profileName} · {p.layout ? 'Custom' : 'Inherited'}<br />
                 {spans.reduce((sum, r) => sum + r.end - r.start, 0).toFixed(2)} s
               </button>
               <div className="mt-1 flex gap-1">
@@ -248,6 +253,9 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
             onDragOver={e => { e.preventDefault(); setInsertion('end') }}
             onDrop={e => { e.preventDefault(); if (dragged) move(dragged, null) }}>Drop last</div>
         </div>
+        {selectedPiece && project && <SegmentLayoutControls key={selectedPiece.id} piece={selectedPiece} clip={clip}
+          source={project.video} position={map.mapRange(selectedPiece)[0]?.start ?? 0}
+          onChange={layout => onSave({ ...edit, sequence: orderedPieces(edit).map(p => p.id === selectedId ? { ...p, layout } : p) })} />}
         <p className="text-[10px] text-zinc-500">Drag a thumbnail before a segment, or use Move left/right. Select a piece, then S to split or Delete to remove. Arrow keys step through output.</p>
       </section>
       <div className="mt-2 flex flex-wrap items-center gap-1.5">

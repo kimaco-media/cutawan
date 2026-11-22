@@ -54,6 +54,19 @@ export interface Transcript {
 export type AspectRatio = '9:16' | '1:1' | '16:9' | 'original'
 
 /** How the source frame is fitted into the target aspect ratio. */
+export interface GamingProfile {
+  name: string
+  composition: Composition
+  sourcePath: string
+}
+
+export interface SegmentLayout {
+  mode: ReframeMode
+  focusX: number
+  composition?: Composition
+  profileName?: string
+}
+
 export type ReframeMode = 'crop' | 'fit-blur' | 'fit-letterbox'
 
 /** Detected clip content — steers 9:16 layout (crop + zoom vs letterbox). */
@@ -123,7 +136,7 @@ export interface ClipEditState {
   /** Razor points (source seconds) dividing the timeline into selectable pieces. */
   splits?: number[]
   /** Ordered source intervals; absent in legacy projects (source order). IDs survive moves. */
-  sequence?: Array<TimeRange & { id: string }>
+  sequence?: Array<TimeRange & { id: string; layout?: SegmentLayout }>
   /** Opt-in transitions keyed by ordered adjacent segment IDs; missing means Cut. */
   transitions?: Array<{ fromId: string; toId: string; kind: 'fade-black' | 'zoom' | 'dissolve' | 'slide-left' | 'slide-right' | 'whip-pan'; duration: number }>
   /** Transitions may mix speech by default, including in older projects. False explicitly protects speech. */
@@ -515,6 +528,7 @@ export interface GpuEncoderStatus {
 }
 
 export interface AppSettings {
+  gamingProfiles?: GamingProfile[]
   /** False only on a fresh installation until onboarding is finished or skipped. */
   setupComplete: boolean
   subscription: SubscriptionSettings
@@ -580,6 +594,7 @@ export interface AppSettings {
 }
 
 export interface SettingsUpdate {
+  gamingProfiles?: GamingProfile[]
   setupComplete?: boolean
   subscription?: Partial<SubscriptionSettings>
   apiKey?: string

@@ -1,3 +1,4 @@
+import { segmentCaptionRanges, segmentClip } from '@shared/segmentLayout'
 import { writeFile, mkdir, rm, stat, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
@@ -319,7 +320,7 @@ function reframeGraph(
  * (already -ss seeked, so clip-relative) input and concatenates them.
  * Produces [vcat] and, when audio is present, [acat].
  */
-export function tightenGraph(segments: KeptSegment[], clipStart: number, hasAudio: boolean, separateInputs = false): string {
+export function tightenGraph(segments: KeptSegment[], clipStart: number, hasAudio: boolean, separateInputs = false, compose?: (span: KeptSegment, index: number) => string): string {
   const parts: string[] = []
   const vLabels: string[] = []
   const aLabels: string[] = []
@@ -328,7 +329,8 @@ export function tightenGraph(segments: KeptSegment[], clipStart: number, hasAudi
     const s = separateInputs ? '0' : Math.max(0, seg.start - clipStart).toFixed(3)
     const e = (separateInputs ? seg.end - seg.start : Math.max(0, seg.end - clipStart)).toFixed(3)
     parts.push(`[${input}:v]trim=start=${s}:end=${e},setpts=PTS-STARTPTS[vs${i}]`)
-    vLabels.push(`[vs${i}]`)
+    if (compose) parts.push(compose(seg, i))
+    vLabels.push(compose ? `[composed${i}]` : `[vs${i}]`)
     if (hasAudio) {
       parts.push(`[${input}:a]atrim=start=${s}:end=${e},asetpts=PTS-STARTPTS[as${i}]`)
       aLabels.push(`[as${i}]`)
@@ -444,6 +446,7 @@ export function buildFilterGraph(
   clipDuration: number,
   tighten: { segments: KeptSegment[]; clipStart: number; separateInputs?: boolean } | null,
   options?: {
+    sourceClip?: Clip
     branding?: BrandingSettings | null
     fontsDirPath?: string
     /** Clip-relative auto-zoom plan; null/empty disables the zoom stage. */
@@ -489,8 +492,27 @@ export function buildFilterGraph(
 
   let audioLabel: string | null = null
   if (tighten) {
-    parts.push(tightenGraph(tighten.segments, tighten.clipStart, source.hasAudio, tighten.separateInputs))
-    parts.push(reframeGraph(clip, source, 'vcat', focus, focusCommandsPath))
+    const original = options?.sourceClip
+    if (original?.edit.sequence?.some(piece => piece.layout)) {
+      parts.push(tightenGraph(tighten.segments, tighten.clipStart, source.hasAudio, tighten.separateInputs, (span, index) => {
+        const piece = segmentClip(original, span)
+        const shots = automaticLayoutShots(piece)
+        const first = shots[0]
+        if (shots.length === 1 && first.composition && first.start <= span.start && first.end >= span.end) {
+          const { w, h } = targetDims(piece.edit.aspect, source)
+          return compositionGraph(`vs${index}`, `panels${index}`, `piece${index}`, source, w, h, first.composition) +
+            `;[panels${index}]setsar=1[composed${index}]`
+        }
+        const graph = reframeGraph(piece, source, 'input', buildFocusPlan(piece, false))
+        return graph.replace(/\[(\w+)\]/g, (_, label: string) =>
+          label === 'input' ? `[vs${index}]` : `[piece${index}_${label}]`) +
+          `;[piece${index}_reframed]setsar=1[composed${index}]`
+      }))
+      parts.push('[vcat]null[reframed]')
+    } else {
+      parts.push(tightenGraph(tighten.segments, tighten.clipStart, source.hasAudio, tighten.separateInputs))
+      parts.push(reframeGraph(clip, source, 'vcat', focus, focusCommandsPath))
+    }
     if (source.hasAudio) {
       parts.push(`[acat]${audioChain(clipDuration, options?.loudness ?? null, options?.audioTailSec)}[aout]`)
       audioLabel = 'aout'
@@ -706,7 +728,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
       titleDuration: job.titleDuration,
       fontFamily: clip.edit.captionFontFamily ?? undefined,
       brandColors: job.branding?.colors,
-      positionRanges: detailCaptionRanges(effectiveClip)
+      positionRanges: map && clip.edit.sequence?.some(p => p.layout) ? segmentCaptionRanges(clip, map) : detailCaptionRanges(effectiveClip)
     })
     const dir = join(tmpdir(), 'cutawan')
     await mkdir(dir, { recursive: true })
@@ -746,6 +768,7 @@ async function render(job: RenderJob): Promise<RenderResult> {
     baseDuration,
     segments ? { segments, clipStart: start, separateInputs: Boolean(clip.edit.sequence) } : null,
     {
+      sourceClip: clip,
       branding: job.branding,
       fontsDirPath: job.fontsDirPath,
       zoomEvents,
