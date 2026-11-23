@@ -89,6 +89,15 @@ export function playbackTimeMap(clip: Pick<Clip, 'edit' | 'visualStory'>, transc
   return new TimeMap(segments, segments.map(s => joins.find(j => j.rightSourceStart === s.start)?.overlap ?? 0))
 }
 
+/** Source-only playback follows the outgoing piece until the blend finishes. */
+export function transitionPlaybackSegments(clip: Clip, transcript: Transcript | null) {
+  const map = playbackTimeMap(clip, transcript)
+  return map.segments.map((span, i) => ({
+    start: i ? map.advance(map.segments[i - 1].end, i - 1).time : span.start,
+    end: span.end
+  }))
+}
+
 /** A bounded two-piece render for the exact export transition, without AI work. */
 export function joinPreviewClip(clip: Clip, join: OutputJoin): Clip {
   const tail = Math.min(join.leftDuration, join.duration * 2 + 0.35)

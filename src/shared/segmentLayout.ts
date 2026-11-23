@@ -1,3 +1,4 @@
+import { clipCaptionPositionRanges } from './captionPlacement'
 import { detailCaptionRanges } from './contentType'
 import type { TimeMap } from './tighten'
 import { validComposition } from './composition'
@@ -39,4 +40,13 @@ export function segmentCaptionRanges(clip: Clip, map: TimeMap): ReturnType<typeo
     const start = Math.max(span.start, range.start), end = Math.min(span.end, range.end)
     return end > start ? map.mapRange({ ...range, start, end }) : []
   }))
+}
+
+/** Source-time caption placement follows each piece's chosen framing. */
+export function segmentCaptionPositionRanges(clip: Clip, y: number, scale: number, width: number, height: number) {
+  const sequence = sequenceWithTrim(clip.edit)
+  if (!sequence?.some(piece => piece.layout)) return clipCaptionPositionRanges(clip, y, scale, width, height)
+  return sequence.flatMap(piece => clipCaptionPositionRanges(segmentClip(clip, piece), y, scale, width, height)
+    .map(range => ({ ...range, start: Math.max(piece.start, range.start), end: Math.min(piece.end, range.end) }))
+    .filter(range => range.end > range.start))
 }
