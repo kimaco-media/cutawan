@@ -520,6 +520,7 @@ export default function PreviewPlayer({
               if (playing && timeline.pieces.length > 1) {
                 const next = (pieceRef.current + 1) % timeline.pieces.length
                 requestSeek(timeline.pieces[next].start, next)
+                if (next === 0) audioRef.current?.sync(0)
                 void videoRef.current.play()
                 return
               }
