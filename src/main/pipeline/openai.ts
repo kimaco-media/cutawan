@@ -2,7 +2,7 @@ import { usesSubscription, usesLocalTranscription, subscriptionJSON, transcribeL
 import { readFile } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
-import { analysisRequests } from './mediaJobs'
+import { apiRequests } from './mediaJobs'
 import { OPENROUTER_API_BASE } from '@shared/openrouter'
 
 /**
@@ -343,6 +343,51 @@ export function transcriptionChunkSec(defaultSec: number): number {
   return openRouter && !usesLocalTranscription() ? OPENROUTER_AUDIO_CHUNK_SEC : defaultSec
 }
 
+export interface TranscriptionPlan {
+  /** Audio chunks transcribed at once. */
+  concurrency: number
+  /**
+   * What each chunk is primed with: the text just before it (`previous`,
+   * which forces one chunk at a time), the opening chunk's text as a spelling
+   * guide for all the others (`first`), or nothing.
+   */
+  context: 'previous' | 'first' | 'none'
+}
+
+/** Hosts where a second simultaneous request competes for the same machine. */
+function isLocalHost(base: string): boolean {
+  try {
+    const host = new URL(base).hostname.replace(/^\[|\]$/g, '')
+    return host === 'localhost' || host === '::1' || host === '0.0.0.0' || host.endsWith('.local') ||
+      host.endsWith('.internal') || host.endsWith('.lan') || host.endsWith('.home.arpa') ||
+      /^(127\.|10\.|192\.168\.|169\.254\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host) ||
+      // IPv6 unique-local (fc00::/7) and link-local (fe80::/10) addresses.
+      /^(f[cd][0-9a-f]{0,2}|fe[89ab][0-9a-f]?):/i.test(host)
+  } catch {
+    return true
+  }
+}
+
+/**
+ * How the active route transcribes a long video's chunks.
+ *
+ * A hosted API takes several chunks at once, which is most of the wait on a
+ * long video: an hour is three twenty-minute requests end to end otherwise.
+ * The price is that a chunk can no longer be primed with the text right
+ * before it, so the opening chunk goes first and its text primes the rest —
+ * Whisper uses a prompt for spelling and style, and the names it needs
+ * (guests, products) are overwhelmingly introduced at the start. On-device
+ * Whisper and a Whisper server on this machine or network stay one at a time:
+ * a second request there only splits the same CPU or GPU.
+ */
+export function transcriptionPlan(): TranscriptionPlan {
+  if (usesLocalTranscription()) return { concurrency: 1, context: 'previous' }
+  if (openRouter) return { concurrency: HOSTED_TRANSCRIPTION_CONCURRENCY, context: 'none' }
+  if (isLocalHost(transcriptionApiBase())) return { concurrency: 1, context: 'previous' }
+  return { concurrency: HOSTED_TRANSCRIPTION_CONCURRENCY, context: 'first' }
+}
+const HOSTED_TRANSCRIPTION_CONCURRENCY = 3
+
 export type ChatContentPart =
   | { type: 'text'; text: string }
   | { type: 'image_url'; image_url: { url: string; detail?: 'low' | 'high' | 'auto' } }
@@ -363,7 +408,7 @@ export async function chatJSON<T>(
   if (usesSubscription()) return subscriptionJSON<T>(messages, schema, signal)
   return withRetries(
     async () => {
-      const content = await analysisRequests.run(() => completeChatContent(
+      const content = await apiRequests.run(() => completeChatContent(
         apiKey,
         model,
         messages,
@@ -491,4 +536,51 @@ export function extractJsonText(content: string): string {
   const trimmed = content.trim()
   const fenced = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i)
   return fenced ? fenced[1].trim() : trimmed
+}
+
+/** Text-to-speech requests are short; a stuck one should fail, not hang a dub. */
+export const SPEECH_TIMEOUT_MS = 2 * 60_000
+
+export interface SpeechRequest {
+  model: string
+  voice: string
+  input: string
+  /** 0.25-4 on models that support it (tts-1); others ignore it. */
+  speed?: number
+  /** Delivery guidance for gpt-4o-mini-tts (pace, tone). */
+  instructions?: string
+}
+
+/**
+ * Synthesise speech through the route's OpenAI-compatible `/audio/speech`
+ * endpoint (OpenAI, a configured base URL, or OpenRouter, which mirrors it).
+ * Returns MP3 bytes. Not available through ChatGPT sign-in: that route has
+ * no paid API, and callers check `dubSupport` before getting here.
+ */
+export async function synthesizeSpeech(apiKey: string, req: SpeechRequest, signal?: AbortSignal): Promise<Buffer> {
+  if (usesSubscription()) throw new OpenAIError('AI voice dubbing is not available with ChatGPT sign-in.')
+  const body = JSON.stringify({
+    model: req.model,
+    voice: req.voice,
+    input: req.input,
+    response_format: 'mp3',
+    ...(req.speed !== undefined && req.speed !== 1 ? { speed: Math.min(4, Math.max(0.25, req.speed)) } : {}),
+    ...(req.instructions ? { instructions: req.instructions } : {})
+  })
+  return withRetries(
+    () => apiRequests.run(async () => {
+      assertKeyMatchesRoute(apiKey)
+      const res = await fetch(`${chatApiBase()}/audio/speech`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json', ...providerHeaders() },
+        body,
+        signal: withTimeout(SPEECH_TIMEOUT_MS, signal)
+      })
+      await raiseForStatus(res, 'Speech synthesis')
+      const bytes = Buffer.from(await res.arrayBuffer())
+      if (bytes.length < 64) throw new OpenAIError('Speech synthesis returned no audio')
+      return bytes
+    }, signal),
+    { signal }
+  )
 }

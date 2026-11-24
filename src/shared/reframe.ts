@@ -1,6 +1,9 @@
 import type { Clip, ClipEditState, VideoType } from './types'
 import { initialClipEditForVideoType } from './videoType'
 import { validLayoutShots } from './contentType'
+import { rangesCovered, sourceStretches } from './clipSegments'
+import { pruneRemovedActive } from './editOps'
+import { REFRAME_EXTENSION_TOLERANCE_SEC } from './contentType'
 
 /**
  * Which clips get their reframe analysis during the pipeline, and how a
@@ -73,16 +76,32 @@ export function userChoiceSupersedesAnalysis(clip: Clip): boolean {
   return Boolean(visible?.length && visible.every(p => p.layout)) ||
     manualLayoutSupersedesAnalysis(clip) || manualCropSupersedesAnalysis(clip)
 }
+/**
+ * How far a trim or join edge may move past the analysed footage before the
+ * framing analysis runs again (defined beside the layout shots it also
+ * governs). Dragging an edge out by a beat is the most common timeline edit,
+ * and re-running face tracking and layout review on every such release cost
+ * tens of seconds of CPU for footage that almost always shows the same shot.
+ * Within this margin the nearest analysis is reused: the focus track holds
+ * its edge value (see focusAt) and the edge layout shot is stretched to the
+ * new edge (see automaticLayoutShots). Extensions accumulate against the
+ * analysed coverage, so further drags outward do bring a fresh pass once the
+ * total passes the margin.
+ */
+export { REFRAME_EXTENSION_TOLERANCE_SEC }
 
 /** Whether a clip still needs its reframe analysis before it is fully framed. */
 export function needsReframe(clip: Clip): boolean {
   if (userChoiceSupersedesAnalysis(clip)) return false
   const coverage = clip.reframeAnalysis ?? { start: clip.suggestedStart, end: clip.suggestedEnd }
+  // A joined clip was analysed only where it plays. Restoring the skipped
+  // stretch, like widening the trim, brings in footage nothing has looked at.
+  const analysed = clip.reframeAnalysis?.ranges ?? [{ start: coverage.start, end: coverage.end }]
   return clip.reframeStatus === 'pending' ||
     // Revisit old context-preserving letterboxes once when opened. Leave
     // accepted composites and manual source corrections alone.
     needsLayoutUpgrade(clip) ||
-    clip.edit.start < coverage.start - 0.001 || clip.edit.end > coverage.end + 0.001
+    !rangesCovered(sourceStretches(clip.edit), analysed, REFRAME_EXTENSION_TOLERANCE_SEC)
 }
 
 /**
@@ -112,7 +131,9 @@ function needsLayoutUpgrade(clip: Clip): boolean {
 /** Record only the interval the analysis actually saw, including no-face results. */
 export function markReframeComplete(clip: Clip): void {
   clip.reframeStatus = 'done'
-  clip.reframeAnalysis = { start: clip.edit.start, end: clip.edit.end, version: 2 }
+  const stretches = sourceStretches(clip.edit)
+  clip.reframeAnalysis = { start: clip.edit.start, end: clip.edit.end, version: 2,
+    ...(stretches.length > 1 ? { ranges: stretches } : {}) }
 }
 
 /** Main owns analysis metadata, but an ordinary save must preserve chosen layout edits. */
@@ -160,8 +181,15 @@ export function layoutUntouched(edit: ClipEditState, videoType: VideoType): bool
 export function mergeReframeResult(current: Clip, analysed: Clip, videoType: VideoType, retryLayout = false): Clip {
   const merged: Clip = {
     ...current,
+    // A re-measurement can drop or move active pauses; a removal choice that
+    // no longer names any of them would only swallow the next click.
+    edit: analysed.gapActivity ? pruneRemovedActive(current.edit, analysed.gapActivity.active) : current.edit,
     focusTrack: analysed.focusTrack,
     contentType: analysed.contentType,
+    // Measured alongside the framing, from the same trim: it travels with it.
+    gapActivity: analysed.gapActivity,
+    captionSafety: analysed.captionSafety ?? current.captionSafety,
+    emphasis: current.emphasis ?? analysed.emphasis,
     visualLayout: (current.visualLayout?.revision ?? 0) > 0 &&
       (current.visualLayout?.revision ?? 0) >= (analysed.visualLayout?.revision ?? 0)
       ? current.visualLayout : analysed.visualLayout,
@@ -176,7 +204,7 @@ export function mergeReframeResult(current: Clip, analysed: Clip, videoType: Vid
   return {
     ...merged,
     edit: {
-      ...current.edit,
+      ...merged.edit,
       reframeMode: analysed.edit.reframeMode,
       framing: analysed.edit.framing,
       focusX: analysed.edit.focusX,

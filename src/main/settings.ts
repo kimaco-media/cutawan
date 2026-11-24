@@ -44,6 +44,8 @@ interface StoredSettings {
   branding: BrandingSettings
   brandVoice: BrandVoiceSettings
   importCookiesBrowser: BrowserCookieSource
+  /** Folder background music is picked from; null = none chosen. */
+  musicFolder: string | null
 }
 
 const DEFAULT_BRANDING: BrandingSettings = {
@@ -83,7 +85,8 @@ const DEFAULTS: StoredSettings = {
   sizeTargetMb: null,
   branding: DEFAULT_BRANDING,
   brandVoice: DEFAULT_BRAND_VOICE,
-  importCookiesBrowser: ''
+  importCookiesBrowser: '',
+  musicFolder: null
 }
 
 function settingsPath(): string {
@@ -195,6 +198,11 @@ export function missingCredentialName(): string {
   return load().subscription.provider === 'openrouter' ? 'OpenRouter key' : 'OpenAI API key'
 }
 
+/** The selected AI route. */
+export function getAiProvider(): AppSettings['subscription']['provider'] {
+  return load().subscription.provider
+}
+
 /** Credential for analysis (and hosted transcription) on the selected provider. */
 export function getAnalysisCredential(): string {
   const provider = load().subscription.provider
@@ -233,7 +241,8 @@ export async function getSettings(): Promise<AppSettings> {
     brandVoice: s.brandVoice,
     appVersion: app.getVersion(),
     importCookiesBrowser: s.importCookiesBrowser,
-    hasImportCookiesFile: getImportCookiesPath() !== null
+    hasImportCookiesFile: getImportCookiesPath() !== null,
+    musicFolder: s.musicFolder
   }
 }
 
@@ -246,6 +255,24 @@ export function getImportPreferences(): {
     importCookiesBrowser: load().importCookiesBrowser,
     importCookiesPath: getImportCookiesPath()
   }
+}
+
+/** The background music folder, or null when none is set. */
+export function getMusicFolder(): string | null {
+  return load().musicFolder ?? null
+}
+
+/**
+ * A settings update as the renderer may send it. The music folder becomes a
+ * media:// read root (music:list allow-lists every track in it), so the
+ * renderer can clear it but not name one: a folder is set only through the
+ * music:chooseFolder dialog, which calls updateSettings itself. Resending
+ * the folder already stored is a no-op and passes. Pure.
+ */
+export function rendererSettingsUpdate(update: SettingsUpdate, storedMusicFolder: string | null): SettingsUpdate {
+  const folder = update.musicFolder
+  if (typeof folder !== 'string' || !folder.trim() || folder.trim() === storedMusicFolder) return update
+  throw new Error('Choose the music folder with the folder picker.')
 }
 
 /** Synchronous access to the stored branding preferences. */
@@ -331,6 +358,9 @@ export async function updateSettings(update: SettingsUpdate): Promise<AppSetting
     s.brandVoice = { ...s.brandVoice, ...update.brandVoice }
   }
   if (update.importCookiesBrowser !== undefined) s.importCookiesBrowser = update.importCookiesBrowser
+  if (update.musicFolder !== undefined) {
+    s.musicFolder = typeof update.musicFolder === 'string' && update.musicFolder.trim() ? update.musicFolder.trim() : null
+  }
   if (update.clearImportCookiesFile) await clearImportCookiesFile()
   persist(s)
   return getSettings()

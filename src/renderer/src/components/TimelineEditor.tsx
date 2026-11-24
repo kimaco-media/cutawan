@@ -2,8 +2,9 @@ import SegmentLayoutControls from './SegmentLayoutControls'
 import { useEffect, useMemo, useState } from 'react'
 import { Redo2, Scissors, SplitSquareHorizontal, Trash2, Undo2 } from 'lucide-react'
 import type { Clip, TimelineData } from '@shared/types'
-import { autoRemovedRanges, normalizeRanges } from '@shared/tighten'
-import { cutRange, orderedPieces, movePiece, keepsPlayback, pieceIdAt, setTrimEdge, splitAndSelect, toggleRestored, uncutAt } from '@shared/editOps'
+import type { TimelineScale } from '@shared/timelineScale'
+import { activityKeptRanges, autoRemovedRanges, normalizeRanges } from '@shared/tighten'
+import { orderedPieces, movePiece, pieceIdAt, splitAndSelect, cutRange, keepsPlayback, moveCutEdge, setTrimEdge, toggleActiveGap, toggleRemovedPause, uncutAt } from '@shared/editOps'
 import { allowsTransitionSpeechOverlap, outputJoins, playbackTimeMap, TRANSITION_NAMES, isOverlap, parseTransitionDuration, type TransitionKind } from '@shared/transitions'
 import { historyState } from '@shared/editHistory'
 import { usePreviewBus } from '../lib/previewBus'
@@ -25,12 +26,12 @@ const SHORTCUTS = 'Space/K play · J/L ±1 s · ←/→ frame · I/O in/out · S
  * Premiere-style shortcuts. Every change goes through the shared edit ops
  * and `clipKeptSegments`, so preview and export stay identical.
  */
-export default function TimelineEditor({ clip, windowStart, windowEnd, fps, timeline, onSave, onLocal }: {
+export default function TimelineEditor({ clip, scale, timelines, fps, onSave, onLocal, onDragState }: {
   clip: Clip
-  windowStart: number
-  windowEnd: number
+  scale: TimelineScale
+  timelines: Array<TimelineData | null>
   fps: number
-  timeline: TimelineData | null
+  onDragState?: (dragging: boolean) => void
   onSave: (edit: Clip['edit']) => void
   onLocal: (edit: Clip['edit']) => void
 }): React.JSX.Element {
@@ -62,13 +63,20 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
     setDragged(null)
     setInsertion(null)
   }
+  const windowStart = scale.panes[0].start
+  const windowEnd = scale.panes[scale.panes.length - 1].end
 
   const marks = useMemo<TimelineMark[]>(() => {
     const restored = normalizeRanges(edit.restored, edit.start, edit.end)
     const auto = autoRemovedRanges(clip, transcript)
       .filter((r) => !restored.some((k) => k.start < r.end && k.end > r.start))
+    // Pauses kept because something happens in them: shown as kept, and one
+    // click removes them like any other pause.
+    const active = activityKeptRanges(clip, transcript)
+      .filter((r) => !restored.some((k) => k.start < r.end && k.end > r.start))
     return [
       ...auto.map((range) => ({ range, kind: 'auto' as const })),
+      ...active.map((range) => ({ range, kind: 'active' as const })),
       ...(edit.tightenCuts ? restored.map((range) => ({ range, kind: 'restored' as const })) : []),
       ...normalizeRanges(edit.cuts, edit.start, edit.end).map((range) => ({ range, kind: 'cut' as const }))
     ]
@@ -139,11 +147,21 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
     <div>
       <p className="mb-1 text-xs text-zinc-400">Source trim · I/O changes source in/out points</p>
       <TrimBar
-        windowStart={windowStart}
-        windowEnd={windowEnd}
+        scale={scale}
+        timelines={timelines}
         start={edit.start}
         end={edit.end}
-        timeline={timeline}
+        onDragState={onDragState}
+        onCutEdge={(cut, which, t) => {
+          // Read the live clip, as onCommit does: the drag spans many renders.
+          const current = useStore.getState().project?.clips.find((c) => c.id === clip.id)
+          if (!current) return
+          const next = moveCutEdge(current.edit, cut, which, t)
+          onLocal(next)
+          // Show the frame the edge now sits on, wherever the clamp left it.
+          const moved = next.cuts?.find((c) => which === 'start' ? c.end === cut.end : c.start === cut.start)
+          if (moved) usePreviewBus.getState().scrub(which === 'start' ? moved.start : moved.end)
+        }}
         onChange={(start, end) => onLocal({ ...edit, start, end })}
         onCommit={() => {
           // Read the live clip: the drag closure was created at drag start,
@@ -160,7 +178,8 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
         playsFor={map.outputDuration}
         onMarkClick={(mark) => {
           if (mark.kind === 'cut') onSave(uncutAt(edit, (mark.range.start + mark.range.end) / 2))
-          else saveTrim(toggleRestored(edit, mark.range))
+          else if (mark.kind === 'active') saveTrim(toggleActiveGap(edit, mark.range))
+          else saveTrim(toggleRemovedPause(edit, mark.range, clip.gapActivity?.active ?? []))
         }}
       />
       <section aria-label="Output sequence" className="mt-3 rounded border border-surface-600 p-2">
@@ -181,8 +200,11 @@ export default function TimelineEditor({ clip, windowStart, windowEnd, fps, time
         <div className="flex gap-2 overflow-x-auto py-2" onDragOver={e => e.preventDefault()}>
           {ordered.map((p, i) => {
             const spans = map.segments.filter(r => r.start < p.end && r.end > p.start)
+            const paneIndex = scale.panes.findIndex(pane => p.start >= pane.start && p.start < pane.end)
+            const pane = scale.panes[paneIndex]
+            const timeline = timelines[paneIndex]
             const frame = timeline?.frames[Math.max(0, Math.min(timeline.frames.length - 1,
-              Math.floor((p.start - windowStart) / (windowEnd - windowStart) * timeline.frames.length)))]
+              Math.floor((p.start - pane.start) / (pane.end - pane.start) * timeline.frames.length)))]
             const join = joins.find(j => j.fromId === p.id && j.toId === ordered[i + 1]?.id)
             const active = spans.some(r => time >= r.start && time < r.end)
             return <div key={p.id} className={`w-40 shrink-0 rounded border p-1 ${insertion === p.id ? 'border-l-4 border-amber-300' : selectedId === p.id ? 'border-blue-400 bg-blue-950/40' : active ? 'border-zinc-400' : 'border-surface-600'}`}

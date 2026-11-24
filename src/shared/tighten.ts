@@ -2,6 +2,7 @@ import { outputJoins } from './transitions'
 import { sequenceWithTrim } from './sequence'
 import { focusAt, focusPanDuration, focusSnaps } from './focusTrack'
 import type { FocusKeyframe, Clip, SpeechRegion, TimeRange, Transcript } from './types'
+import { findRetakes, retakeCutRanges } from './retakes'
 
 /**
  * "Tighten cuts": compute which sub-segments of a clip to keep so that long
@@ -16,8 +17,11 @@ export interface KeptSegment {
   end: number
 }
 
+/** The parts of a clip that decide what pause removal keeps and cuts. */
+export type TightenClip = Pick<Clip, 'edit' | 'visualStory' | 'gapActivity'>
+
 /** Actual playback length, after pause removal and the user's cuts. */
-export function editedClipDuration(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): number {
+export function editedClipDuration(clip: TightenClip, transcript: Transcript | null): number {
   const kept = clipKeptSegments(clip, transcript)
   const duration = kept ? kept.reduce((sum, range) => sum + range.end - range.start, 0) : clip.edit.end - clip.edit.start
   return duration - outputJoins(clip, transcript).reduce((sum, join) => sum + join.overlap, 0)
@@ -58,10 +62,10 @@ export function subtractRanges(ranges: TimeRange[], remove: TimeRange[]): TimeRa
  * the whole trim plays untouched. Export, preview, durations and the AI's
  * view of the edit all go through here.
  */
-export function clipKeptSegments(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): KeptSegment[] | null {
+export function clipKeptSegments(clip: TightenClip, transcript: Transcript | null): KeptSegment[] | null {
   const { start, end } = clip.edit
   const auto = clip.edit.tightenCuts && transcript
-    ? computeKeptSegments(transcript, start, end, clip.visualStory?.protectedRanges)
+    ? computeKeptSegments(transcript, start, end, clipProtectedRanges(clip))
     : null
   const cuts = normalizeRanges(clip.edit.cuts, start, end)
   const restored = auto ? normalizeRanges(clip.edit.restored, start, end) : []
@@ -76,10 +80,38 @@ export function clipKeptSegments(clip: Pick<Clip, 'edit' | 'visualStory'>, trans
 }
 
 /** What automatic pause removal takes out of the trim, for display and restore. */
-export function autoRemovedRanges(clip: Pick<Clip, 'edit' | 'visualStory'>, transcript: Transcript | null): TimeRange[] {
+export function autoRemovedRanges(clip: TightenClip, transcript: Transcript | null): TimeRange[] {
   if (!clip.edit.tightenCuts || !transcript) return []
-  const auto = computeKeptSegments(transcript, clip.edit.start, clip.edit.end, clip.visualStory?.protectedRanges)
+  const auto = computeKeptSegments(transcript, clip.edit.start, clip.edit.end, clipProtectedRanges(clip))
   return auto ? subtractRanges([{ start: clip.edit.start, end: clip.edit.end }], auto) : []
+}
+
+/**
+ * Stretches pause removal must keep: the visual story's payoff, plus pauses
+ * measured as active (something moves or sounds in them) unless the user
+ * chose to remove that pause anyway (`edit.removedActive`).
+ */
+export function clipProtectedRanges(clip: TightenClip): TimeRange[] {
+  const removed = clip.edit.removedActive ?? []
+  const active = (clip.gapActivity?.active ?? [])
+    .filter(r => !removed.some(x => x.start < r.end && x.end > r.start))
+  return [...(clip.visualStory?.protectedRanges ?? []), ...active]
+}
+
+/** Slivers left by edge snapping are not worth a timeline mark. */
+const MIN_ACTIVITY_MARK_SEC = 0.1
+
+/**
+ * Pauses that pause removal would have cut but keeps because they were
+ * measured as active — what the timeline shows as "kept automatically".
+ * Each overlaps the active range that kept it, so it can name that range
+ * in `edit.removedActive`.
+ */
+export function activityKeptRanges(clip: TightenClip, transcript: Transcript | null): TimeRange[] {
+  if (!clip.edit.tightenCuts || !transcript || !clip.gapActivity?.active.length) return []
+  const without = autoRemovedRanges({ ...clip, gapActivity: undefined }, transcript)
+  return subtractRanges(without, autoRemovedRanges(clip, transcript))
+    .filter(r => r.end - r.start >= MIN_ACTIVITY_MARK_SEC)
 }
 
 /** Pause longer than this (between words) gets cut down. */
@@ -113,8 +145,25 @@ const BRIDGE_MAX_GAP_SEC = 1.5
 
 const FILLER_WORDS = new Set(['um', 'uh', 'uhm', 'umm', 'erm', 'er', 'ah', 'mmm', 'hmm', 'mhm'])
 
-function isFiller(text: string): boolean {
+export function isFiller(text: string): boolean {
   return FILLER_WORDS.has(text.toLowerCase().replace(/[^a-z]/g, ''))
+}
+
+/**
+ * Speech pause removal takes out because the speaker said it again: false
+ * starts and repeated takes (see retakes.ts), in source seconds, for the
+ * words whose midpoint is inside the trim. Like a removed pause, each can be
+ * restored with a click.
+ */
+export function retakeRanges(transcript: Transcript, clipStart: number, clipEnd: number): TimeRange[] {
+  const words = transcript.segments.flatMap((s) => s.words)
+    .filter((w) => {
+      const mid = (w.start + w.end) / 2
+      return mid >= clipStart && mid <= clipEnd
+    })
+    .sort((a, b) => a.start - b.start)
+    .map((w) => ({ text: w.sourceText ?? w.text, start: w.start, end: w.end, filler: isFiller(w.sourceText ?? w.text) }))
+  return normalizeRanges(retakeCutRanges(words, findRetakes(words)), clipStart, clipEnd)
 }
 
 /**
@@ -127,17 +176,22 @@ export function computeKeptSegments(
   clipEnd: number,
   protectedRanges: KeptSegment[] = []
 ): KeptSegment[] | null {
+  const protectedIntervals = protectedRanges.filter(r => Number.isFinite(r.start) && Number.isFinite(r.end) &&
+    r.end > r.start && r.start < clipEnd && r.end > clipStart)
+    .map(r => ({ start: Math.max(clipStart, r.start), end: Math.min(clipEnd, r.end) }))
+  // Earlier takes the speaker restarted are cut like fillers, except that a
+  // protected stretch (a visual payoff, an active pause) still wins.
+  const retakes = subtractRanges(retakeRanges(transcript, clipStart, clipEnd),
+    normalizeRanges(protectedIntervals, clipStart, clipEnd))
+  const inRetake = (t: number): boolean => retakes.some(r => t > r.start && t < r.end)
   // Caption edits change presentation, not what was spoken. Keep legacy blank
   // words too: their original text is unknown, but their speech timing is not.
   const words = transcript.segments.flatMap((s) => s.words)
     .filter((w) => {
       const mid = (w.start + w.end) / 2
-      return mid >= clipStart && mid <= clipEnd && !isFiller(w.sourceText ?? w.text)
+      return mid >= clipStart && mid <= clipEnd && !isFiller(w.sourceText ?? w.text) && !inRetake(mid)
     })
     .sort((a, b) => a.start - b.start)
-  const protectedIntervals = protectedRanges.filter(r => Number.isFinite(r.start) && Number.isFinite(r.end) &&
-    r.end > r.start && r.start < clipEnd && r.end > clipStart)
-    .map(r => ({ start: Math.max(clipStart, r.start), end: Math.min(clipEnd, r.end) }))
   if (words.length < 3 && !protectedIntervals.length) return null
 
   // Build keep-intervals around each retained word, then merge.
@@ -180,8 +234,13 @@ export function computeKeptSegments(
 
   const fillers = transcript.segments.flatMap((s) => s.words)
     .filter((w) => w.end > clipStart && w.start < clipEnd && isFiller(w.sourceText ?? w.text))
-  const kept = snapToSilence(spaced, transcript.speech, fillers).filter((s) => s.end - s.start >= MIN_SEGMENT_SEC ||
-    protectedIntervals.some(r => r.start < s.end && r.end > s.start))
+  // Bridging may have carried a kept run back over a retake; the retake
+  // goes regardless. Then settle: no sliver of a piece, no hairline cut.
+  const snapped = subtractRanges(snapToSilence(spaced, transcript.speech, fillers), retakes)
+  const kept = settleSegments(snapped, {
+    keep: (s) => protectedIntervals.some(r => r.start < s.end && r.end > s.start),
+    hard: [...retakes, ...fillers]
+  })
   if (kept.length === 0) return null
 
   const keptDuration = kept.reduce((sum, s) => sum + (s.end - s.start), 0)
@@ -189,6 +248,56 @@ export function computeKeptSegments(
   // Nothing meaningful to remove -> keep the untouched clip.
   if (removed < 0.4) return null
   return kept
+}
+
+/** More settle passes than this means something oscillates; stop there. */
+const MAX_SETTLE_PASSES = 8
+
+/**
+ * The final cleanup, run to a fixpoint: fill every internal removal shorter
+ * than MIN_REMOVAL_SEC and drop every kept piece shorter than
+ * MIN_SEGMENT_SEC, again and again until neither changes anything. Each of
+ * the earlier passes (margins, protections, voice-activity snapping, retake
+ * cuts) can leave a fragment the others already ran past; settling last
+ * means none survives whatever order they ran in.
+ *
+ * Filling first is the safer order: it only ever keeps more of the speaker.
+ * A fill never makes a new short gap and a drop never makes a new short
+ * piece, so this normally settles in one or two passes; a state seen before
+ * (a two-state oscillation) or the pass limit stops it regardless.
+ *
+ * `keep` marks pieces that may be short (protected visual action); `hard`
+ * marks removals that are never filled however short (a removed filler word
+ * or retake: filling it would bring the word back).
+ */
+export function settleSegments(
+  segments: KeptSegment[],
+  opts: { keep?: (segment: KeptSegment) => boolean; hard?: TimeRange[] } = {}
+): KeptSegment[] {
+  const keep = opts.keep ?? (() => false)
+  const hard = opts.hard ?? []
+  const signature = (list: KeptSegment[]): string => list.map(s => `${s.start.toFixed(6)}-${s.end.toFixed(6)}`).join(',')
+  let current = segments.filter(s => s.end > s.start).map(s => ({ ...s }))
+  const seen = new Set<string>([signature(current)])
+  for (let pass = 0; pass < MAX_SETTLE_PASSES; pass++) {
+    const filled: KeptSegment[] = []
+    for (const segment of current) {
+      const previous = filled[filled.length - 1]
+      const gap = previous ? segment.start - previous.end : Infinity
+      if (previous && gap < MIN_REMOVAL_SEC &&
+          !hard.some(h => h.start < segment.start && h.end > previous.end)) {
+        previous.end = Math.max(previous.end, segment.end)
+      } else {
+        filled.push({ ...segment })
+      }
+    }
+    const next = filled.filter(s => s.end - s.start >= MIN_SEGMENT_SEC || keep(s))
+    const key = signature(next)
+    if (seen.has(key)) return next
+    seen.add(key)
+    current = next
+  }
+  return current
 }
 
 /**

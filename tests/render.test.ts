@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { buildFilterGraph, speechSafeFade } from '../src/main/pipeline/render'
+import { buildFilterGraph, cutFades, speechSafeFade } from '../src/main/pipeline/render'
+import { outputJoins } from '@shared/transitions'
 import { makeTranscript } from './helpers'
 import { DEFAULT_BRAND_COLORS, DEFAULT_CAPTION_STYLE_ID } from '@shared/captionStyles'
 import type { BrandingSettings, Clip, VideoInfo } from '@shared/types'
@@ -55,6 +56,17 @@ const branding: BrandingSettings = {
 }
 
 describe('buildFilterGraph', () => {
+  it('fades the composed animated captions together with the underlying video', () => {
+    const clip = makeClip(0, 4)
+    clip.edit.sequence = [{ id: 'a', start: 2, end: 4 }, { id: 'b', start: 0, end: 2 }]
+    clip.edit.transitions = [{ fromId: 'a', toId: 'b', kind: 'fade-black', duration: 0.4 }]
+    const graph = buildFilterGraph(clip, source, null, 4,
+      { segments: clip.edit.sequence, sources: clip.edit.sequence, clipStart: 0 },
+      { captionFrames: { width: 1080, height: 1920, fps: 30 }, transitions: outputJoins(clip, null) })
+    expect(graph.filterComplex).toContain('[2:v]overlay=0:0:eof_action=repeat:format=auto,setsar=1[beforeTransitions]')
+    expect(graph.filterComplex).toContain('[beforeTransitions]fade=t=out')
+  })
+
   it('fits only protected shots in source-relative time and lets manual framing override', () => {
     const clip = makeClip(100, 130)
     clip.edit.framing = 'auto'
@@ -238,5 +250,44 @@ describe('buildFilterGraph', () => {
       fontsDirPath: '/custom/fonts'
     })
     expect(graph.filterComplex).toContain("fontsdir='/custom/fonts'")
+  })
+})
+
+describe('audio fades at internal cuts', () => {
+  const segments = [{ start: 0, end: 4 }, { start: 5, end: 9 }, { start: 10, end: 12 }]
+  const audioPieces = (graph: string): string[] => graph.split(';').filter((part) => part.includes('atrim'))
+
+  it('fades out before each cut and in after it, never at the clip edges', () => {
+    const graph = buildFilterGraph(makeClip(0, 12), source, null, 10, { segments, clipStart: 0 }).filterComplex
+    const [first, middle, last] = audioPieces(graph)
+    expect(first).toBe('[0:a]atrim=start=0.000:end=4.000,asetpts=PTS-STARTPTS,afade=t=out:st=3.9850:d=0.0150:curve=hsin[as0]')
+    expect(middle).toBe('[0:a]atrim=start=5.000:end=9.000,asetpts=PTS-STARTPTS,afade=t=in:d=0.0150:curve=hsin,' +
+      'afade=t=out:st=3.9850:d=0.0150:curve=hsin[as1]')
+    expect(last).toBe('[0:a]atrim=start=10.000:end=12.000,asetpts=PTS-STARTPTS,afade=t=in:d=0.0150:curve=hsin[as2]')
+    // Video is cut exactly as before.
+    expect(graph).toContain('[0:v]trim=start=5.000:end=9.000,setpts=PTS-STARTPTS[vs1]')
+  })
+
+  it('fades each piece of a joined clip in its own input', () => {
+    const joined = [{ start: 60, end: 70 }, { start: 360, end: 372 }]
+    const graph = buildFilterGraph(makeClip(60, 372), source, null, 22, { segments: joined, clipStart: 60, sources: joined }).filterComplex
+    expect(audioPieces(graph)).toEqual([
+      '[0:a]atrim=start=0.000:end=10.000,asetpts=PTS-STARTPTS,afade=t=out:st=9.9850:d=0.0150:curve=hsin[as0]',
+      '[1:a]atrim=start=0.000:end=12.000,asetpts=PTS-STARTPTS,afade=t=in:d=0.0150:curve=hsin[as1]'
+    ])
+  })
+
+  it('never fades a short piece to nothing, and leaves touching pieces alone', () => {
+    // A 40 ms piece is faded over a quarter of its length at each end.
+    expect(cutFades([{ start: 0, end: 1 }, { start: 2, end: 2.04 }, { start: 3, end: 4 }], 1, 0.04))
+      .toBe(',afade=t=in:d=0.0100:curve=hsin,afade=t=out:st=0.0300:d=0.0100:curve=hsin')
+    expect(cutFades([{ start: 0, end: 1 }, { start: 1, end: 2 }], 0, 1)).toBe('')
+    expect(cutFades([{ start: 0, end: 1 }], 0, 1)).toBe('')
+  })
+
+  it('keeps the existing end-of-clip fade and adds nothing to an uncut clip', () => {
+    const graph = buildFilterGraph(makeClip(0, 12), source, null, 10, { segments, clipStart: 0 }, { audioTailSec: 0.4 }).filterComplex
+    expect(graph).toContain('afade=t=out:st=9.600:d=0.4')
+    expect(buildFilterGraph(makeClip(), source, null, 30, null).filterComplex).not.toContain('afade')
   })
 })

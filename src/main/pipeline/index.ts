@@ -5,9 +5,13 @@ import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import type { AnalyzeOptions, BrowserCookieSource, ImportProgress, PipelineProgress, Project } from '@shared/types'
 import { mapLimit } from './concurrency'
-import { extractThumbnail, probeVideo } from './ffmpeg'
+import { probeVideo } from './ffmpeg'
+import { writeClipThumbnail } from './thumbnail'
 import { ensureTranscript } from './projectTranscript'
-import { dedupeClips, detectHighlights, maxDurationFor } from './highlights'
+// Visual discovery and visual-payoff repair keep to the length target: only
+// transcript clips get the overrun allowance, because only they get the
+// overrun ranking penalty and note (see applyLengthPenalties).
+import { dedupeClips, detectHighlights, softMaxDurationFor } from './highlights'
 import { discoverSourceMoments } from './sourceDiscovery'
 import { visualCandidateClip } from './visualCandidates'
 import { rankEditorialCandidates } from './editorialReview'
@@ -15,6 +19,7 @@ import { timed } from './timing'
 import { assessClipVisuals, ensembleScore } from './visualScore'
 import { completeVisualStory } from './visualStory'
 import { attachBroll } from './broll'
+import { importLicence } from '@shared/importLicence'
 import {
   assertCookieAuthSupported,
   cookieCopyErrorHint,
@@ -31,6 +36,8 @@ import {
 } from './ytdlp'
 import { getAnalysisCredential, getImportPreferences, getModelPreferences, missingCredentialName } from '../settings'
 import { projectDir, saveProject, updateProject } from '../projects'
+import { diversifyClipOrder } from '@shared/clipVariety'
+import { personaliseClips, recordGeneratedClips } from '../personalisation'
 
 export async function createProject(videoPath: string): Promise<Project> {
   const video = await probeVideo(videoPath)
@@ -52,7 +59,8 @@ export async function createProject(videoPath: string): Promise<Project> {
 
 export async function createProjectFromUrl(
   url: string,
-  onProgress: (p: ImportProgress) => void
+  onProgress: (p: ImportProgress) => void,
+  signal?: AbortSignal
 ): Promise<Project> {
   const binPath = await ensureYtDlp(onProgress)
   const prefs = getImportPreferences()
@@ -63,17 +71,27 @@ export async function createProjectFromUrl(
   assertCookieAuthSupported(cookieOpts)
   onProgress({ progress: -1, message: 'Checking the video…' })
   const meta = await withSelfUpdateRetry(binPath, onProgress, () =>
-    fetchUrlMeta(binPath, url, cookieOpts)
+    fetchUrlMeta(binPath, url, cookieOpts, signal)
   ).catch(rethrowWithLoginHint(prefs.importCookiesBrowser, Boolean(prefs.importCookiesPath)))
+
+  signal?.throwIfAborted()
+  // Not blocking: the notice on the setup screen is all this decides.
+  const licence = importLicence(url, meta.license)
+  onProgress({ progress: 0.15, message: 'Downloading video…', licence })
 
   const id = randomUUID()
   const dir = projectDir(id)
   await mkdir(dir, { recursive: true })
   const videoPath = join(dir, 'source.mp4')
-  onProgress({ progress: 0.15, message: 'Downloading video…' })
-  await withSelfUpdateRetry(binPath, onProgress, () =>
-    downloadUrlVideo(binPath, meta.webpageUrl, videoPath, onProgress, cookieOpts)
-  ).catch(rethrowWithLoginHint(prefs.importCookiesBrowser, Boolean(prefs.importCookiesPath)))
+  try {
+    await withSelfUpdateRetry(binPath, onProgress, () =>
+      downloadUrlVideo(binPath, meta.webpageUrl, videoPath, onProgress, cookieOpts, signal)
+    ).catch(rethrowWithLoginHint(prefs.importCookiesBrowser, Boolean(prefs.importCookiesPath)))
+  } catch (err) {
+    // A cancelled or failed download leaves no half-made project behind.
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+    throw err
+  }
 
   onProgress({ progress: 0.97, message: 'Reading video…' })
   const video = await probeVideo(videoPath)
@@ -87,7 +105,8 @@ export async function createProjectFromUrl(
     transcript: null,
     clips: [],
     prompt: '',
-    videoType: 'auto'
+    videoType: 'auto',
+    importLicence: licence
   }
   await saveProject(project)
   onProgress({ progress: 1, message: 'Done' })
@@ -168,12 +187,12 @@ export async function analyzeProject(
     const discovery = options.visualDiscovery ? await timed('source-discovery', () => discoverSourceMoments({
       videoPath: project.video.path, durationSec: project.video.durationSec, transcript,
       apiKey, model: settings.analysisModel, providerCacheKey: settings.analysisProviderKey,
-      prompt: options.prompt, maxClipDurationSec: maxDurationFor(options.clipLength),
+      prompt: options.prompt, maxClipDurationSec: softMaxDurationFor(options.clipLength),
       cacheDir: join(projectDir(project.id), 'discovery-cache'), signal,
       onProgress: message => onProgress({ stage: 'analyze', progress: .58, message })
     })) : undefined
     const visualClips = (discovery?.candidates ?? []).flatMap(candidate => {
-      const clip = visualCandidateClip(candidate, transcript, project.video.durationSec, maxDurationFor(options.clipLength))
+      const clip = visualCandidateClip(candidate, transcript, project.video.durationSec, softMaxDurationFor(options.clipLength))
       return clip ? [clip] : []
     })
     if (discovery) {
@@ -196,9 +215,16 @@ export async function analyzeProject(
       transcript,
       options,
       project.video.durationSec,
-      signal
+      signal,
+      ({ fraction, message }) => onProgress({ stage: 'analyze', progress: 0.6 + fraction * 0.04, message }),
+      // The outline of the whole video, used to join distant moments, is
+      // reused across regenerations; it depends only on the transcript and model.
+      { cacheDir: join(projectDir(project.id), 'outline-cache'), providerCacheKey: settings.analysisProviderKey }
     )) : []
     for (const clip of clips) clip.discovery = { origin: 'transcript' }
+    // A small re-ranking from the user's own exports and edits, when there is
+    // enough of it (see shared/personalisation.ts). Scores move; parts do not.
+    const personalisedFrom = clips.length ? await personaliseClips(clips) : null
     clips.push(...visualClips)
     if (clips.length === 0) {
       throw new Error(discovery?.status === 'failed'
@@ -211,7 +237,7 @@ export async function analyzeProject(
     let scored = 0
     const incomplete = new Set<string>()
     const incoherent = new Set<string>()
-    await timed('visual-review', () => mapLimit(clips, 3, async (clip) => {
+    await timed('visual-review', () => mapLimit(clips, 4, async (clip) => {
       signal?.throwIfAborted()
       let visual = await assessClipVisuals(
         apiKey,
@@ -223,7 +249,7 @@ export async function analyzeProject(
       )
       if (visual?.needsVisualPayoff) {
         const repaired = await completeVisualStory(apiKey, settings.analysisModel, project.video.path,
-          transcript, clip, project.video.durationSec, maxDurationFor(options.clipLength), signal)
+          transcript, clip, project.video.durationSec, softMaxDurationFor(options.clipLength), signal)
         if (repaired) {
           Object.assign(clip, repaired)
           visual = await assessClipVisuals(apiKey, settings.analysisModel, project.video.path, transcript, clip, signal)
@@ -233,9 +259,11 @@ export async function analyzeProject(
       }
       if (visual) {
         if (visual.storyIssue) incoherent.add(clip.id)
+        if (clip.scoreBreakdown) clip.scoreBreakdown = { ...clip.scoreBreakdown, visual: visual.visualScore }
         clip.viralityScore = ensembleScore(clip.viralityScore, visual.visualScore)
         clip.visualSummary = visual.visualSummary
         clip.visualLayout = visual.visualLayout
+        if (visual.emphasis) clip.emphasis = visual.emphasis
       }
       scored++
       onProgress({
@@ -269,7 +297,11 @@ export async function analyzeProject(
       })
       clips = ranked.clips
       if (!clips.length) throw new Error('Editorial review found incomplete or misleading selections. Try a longer clip length or different instructions; the review report has been saved.')
-    } else clips = baselineClips
+    } else {
+      // Visual scoring re-sorted the list, so vary the kinds of moment at the
+      // top again on the final scores (see shared/clipVariety.ts).
+      clips = diversifyClipOrder(baselineClips)
+    }
 
     // Layouts for the top clips run in the background once the list is on
     // screen (see backgroundReframe.ts); every clip starts pending.
@@ -285,6 +317,8 @@ export async function analyzeProject(
       p.prompt = options.prompt
       p.videoType = options.videoType
       p.clipsGenerationId = generationId
+      if (personalisedFrom !== null) p.personalised = { generationId, positives: personalisedFrom }
+      else delete p.personalised
       p.rankingEnabled = options.editorialRanking === true
       if (!p.rankingEnabled) delete p.editorialRanking
     })
@@ -324,10 +358,13 @@ export async function analyzeProject(
     let thumbnailed = 0
     await timed('thumbnails', () => mapLimit(clips, 4, async (clip) => {
       signal?.throwIfAborted()
-      const at = clip.suggestedStart + Math.min(1.5, (clip.suggestedEnd - clip.suggestedStart) / 2)
       try {
-        clip.thumbnailPath = await extractThumbnail(project.video.path, at, join(thumbsDir, `${clip.id}.jpg`))
+        // Best of a few candidates inside what the clip plays; the plain
+        // 1.5 s frame whenever sampling fails.
+        clip.thumbnailPath = await writeClipThumbnail(project.video.path, project.video, clip, transcript,
+          join(thumbsDir, `${clip.id}.jpg`), signal)
       } catch {
+        signal?.throwIfAborted()
         clip.thumbnailPath = null
       }
       thumbnailed++
@@ -349,6 +386,8 @@ export async function analyzeProject(
         return result ? { ...current, thumbnailPath: result.thumbnailPath } : current
       })
     })
+    // Every clip of the run, so later exports and edits have something to compare against.
+    void recordGeneratedClips(project.id, persisted.clips).catch((err) => console.error('Could not record clips:', err))
     onProgress({ stage: 'done', progress: 1, message: 'Done' })
     return persisted
   } finally {
