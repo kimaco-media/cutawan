@@ -43,13 +43,14 @@ import { dubClip, estimateDub, type DubVoiceChoice } from './pipeline/dub'
 import { condenseDubLines } from './pipeline/dubScript'
 import { DUB_VOICES, dubSupport } from '@shared/dubPlan'
 import { addCustomFonts, listCustomFonts, removeCustomFont, renderFontsDir } from './fonts'
+import { readSoundLibrary, importSound, soundDirectory } from './soundLibrary'
 import { clipMusicPath, listMusicTracks } from './music'
 import { clearImportCookiesFile, installImportCookiesFile } from './cookies'
 import { checkForUpdates, downloadUpdate, installUpdate, updateFromSource, getUpdateDownloadState, onUpdateDownloadState, openUpdateInstaller, cancelUpdateDownload } from './updates'
 import { UpdateActivity } from './updateActivity'
 import { isMediaPathAllowed } from './mediaAccess'
 import { sanitizeFileName, uniqueOutputPath } from './exportPath'
-import { deleteProject, listProjects, loadProject, projectDir, updateProject } from './projects'
+import { deleteProject, listProjects, loadProject, projectDir, projectsRoot, updateProject } from './projects'
 import {
   getAiProvider,
   getAnalysisCredential,
@@ -393,6 +394,8 @@ export function registerIpcHandlers(): void {
           imagePath: branding.imagePath && existsSync(branding.imagePath) ? branding.imagePath : null
         },
         fontsDirPath: await renderFontsDir(),
+        soundLibrary: clip.edit.manualSoundEffects?.length ? await readSoundLibrary(soundDirectory(projectsRoot(), projectId), project.soundAssets,
+          new Set(clip.edit.manualSoundEffects.filter(p => p.enabled).map(p => p.assetId))) : [],
         musicPath: await clipMusicPath(clip, getMusicFolder()),
         signal: controller.signal,
         onProgress: (fraction) => {
@@ -605,6 +608,22 @@ export function registerIpcHandlers(): void {
     if (result.canceled || result.filePaths.length === 0) return getSettings()
     await installImportCookiesFile(result.filePaths[0])
     return getSettings()
+  })
+
+  handle('sound:list', async (_event, id: string) => {
+    const dir = soundDirectory(projectsRoot(), id)
+    return readSoundLibrary(dir, (await loadProject(id)).soundAssets)
+  })
+  handle('sound:import', async (event, id: string) => {
+    const dir = soundDirectory(projectsRoot(), id)
+    await loadProject(id)
+    const picked = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender)!, {
+      title: 'Import sound effect', properties: ['openFile'], filters: [{ name: 'MP3 audio', extensions: ['mp3'] }]
+    })
+    if (!picked.canceled && picked.filePaths[0]) {
+      await importSound(dir, picked.filePaths[0], asset => updateProject(id, p => { (p.soundAssets ??= []).push(asset) }))
+    }
+    return readSoundLibrary(dir, (await loadProject(id)).soundAssets)
   })
 
   handle('music:list', async () => listMusicTracks(getMusicFolder()))

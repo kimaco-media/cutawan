@@ -434,7 +434,10 @@ export async function checkExport(path: string, job: RenderJob, result: RenderRe
     let inside = [...confirmed, ...(midWord ? [midWord] : [])]
     let loudness = measuredLoudness(analysis)
 
-    const { plan } = judged
+    // A head/tail repair would move or truncate explicitly timed effects.
+    // On a silent source their chosen gain is also the entire audio mix.
+    const preserveLane = job.clip.edit.manualSoundEffects?.some(cue => cue.enabled)
+    const plan = preserveLane ? { ...judged.plan, head: 0, tail: 0, loudness: job.source.hasAudio && judged.plan.loudness } : judged.plan
     if (plan.head > 0 || plan.tail > 0 || plan.loudness) {
       const repairTime = linkedSignal(job.signal, Math.max(20, info.durationSec) * 1000)
       try {

@@ -8,6 +8,9 @@ import { create } from 'zustand'
  */
 
 interface PreviewBus {
+  outputTime: number
+  seekOutput: ((t: number) => void) | null
+  outputDuration: number
   /** Current playback position in source-video seconds. */
   time: number
   setTime: (t: number) => void
@@ -31,6 +34,9 @@ interface PreviewBus {
 }
 
 export const usePreviewBus = create<PreviewBus>((set, get) => ({
+  outputTime: 0,
+  outputDuration: 0,
+  seekOutput: null,
   time: 0,
   setTime: (t) => set({ time: t }),
   seekHandler: null,

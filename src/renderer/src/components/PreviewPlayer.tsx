@@ -1,3 +1,4 @@
+import { manualCuePlan, type LibrarySound } from '@shared/manualSound'
 import ComposedJoin from './ComposedJoin'
 import { segmentClip } from '@shared/segmentLayout'
 import { sequenceWithTrim } from '@shared/sequence'
@@ -42,9 +43,13 @@ import AnimatedCaptionLayer from './AnimatedCaptionLayer'
  */
 export default function PreviewPlayer({
   project,
+  soundLibrary,
+  onSoundError,
   clip
 }: {
   project: Project
+  soundLibrary: LibrarySound[]
+  onSoundError: (message: string) => void
   clip: Clip
 }): React.JSX.Element {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -265,11 +270,20 @@ export default function PreviewPlayer({
     const name = pickMusicTrack(musicTracks.map((t) => t.name), clip.id, clip.edit.musicTrack)
     return musicTracks.find((t) => t.name === name)?.path ?? null
   }, [clip.edit.music, clip.edit.musicTrack, clip.id, musicTracks])
+  const manual = useMemo(() => manualCuePlan(clip.edit.manualSoundEffects, soundLibrary, outputDuration).cues
+    .map(cue => ({ ...cue, path: window.cutawan.mediaUrl(cue.path) })), [clip.edit.manualSoundEffects, soundLibrary, outputDuration])
+  useEffect(() => { usePreviewBus.setState({ outputTime, outputDuration }) }, [outputTime, outputDuration])
   const mix = useMemo<PreviewMix>(() => ({
+    manual,
+    onManualError: id => {
+      const placement = clip.edit.manualSoundEffects?.find(p => p.id === id)
+      const name = soundLibrary.find(a => a.id === placement?.assetId)?.name ?? 'sound effect'
+      onSoundError('Cannot play ' + name + '. Import a working MP3 and replace the placement.')
+    },
     cues: project.video.hasAudio ? clipSoundEffects(clip, timeline, titlePlan ? titlePlan.start : null) : [],
     musicUrl: musicPath && project.video.hasAudio ? window.cutawan.mediaUrl(musicPath) : null,
     envelope: musicGainEnvelope(speechSpans(outputWords), outputDuration)
-  }), [clip, timeline, titlePlan, musicPath, outputWords, outputDuration, project.video.hasAudio])
+  }), [manual, soundLibrary, onSoundError, clip, timeline, titlePlan, musicPath, outputWords, outputDuration, project.video.hasAudio])
   const audioRef = useRef<PreviewAudio | null>(null)
   useEffect(() => {
     if (!audioRef.current) audioRef.current = new PreviewAudio(mix)
@@ -442,11 +456,15 @@ export default function PreviewPlayer({
     resyncAudio(0)
   }
 
-  const seek = (fraction: number): void => {
-    const out = fraction * outputDuration
+  const seekOutput = useCallback((out: number): void => {
     requestSeek(timeline.toSource(out), timeline.pieceAt(out))
     resyncAudio(out)
-  }
+  }, [requestSeek, resyncAudio, timeline])
+  useEffect(() => {
+    usePreviewBus.setState({ seekOutput })
+    return () => usePreviewBus.setState({ seekOutput: null })
+  }, [seekOutput])
+  const seek = (fraction: number): void => seekOutput(fraction * outputDuration)
 
   const captionGroups = useMemo(
     () => (clip.edit.captionsEnabled && project.transcript

@@ -1,3 +1,5 @@
+import { manualCuePlan, type LibrarySound, type ManualCue } from '@shared/manualSound'
+import { withManualSounds } from './manualSoundMix'
 import { segmentCaptionPositionRanges, segmentClip } from '@shared/segmentLayout'
 import { writeFile, mkdir, rm, stat, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
@@ -554,6 +556,8 @@ function watermarkOverlayXY(position: WatermarkPosition, margin: number): string
 
 /** Sound effects and background music mixed under the speech (see shared/audioMix.ts). */
 export interface AudioMixPlan {
+  /** Applied on the finished output clock, after overlaps and dubbing. */
+  manual?: ManualCue[]
   /** Synthesised effects, output seconds. */
   sfx: SfxCue[]
   /** Background music file, looped to the clip's length; null for none. */
@@ -854,6 +858,7 @@ export function buildFilterGraph(
 }
 
 export interface RenderJob {
+  soundLibrary?: LibrarySound[]
   clip: Clip
   source: VideoInfo
   transcript: Transcript | null
@@ -906,13 +911,14 @@ async function planAudioMix(
   outputDuration: number,
   titleAt: number | null,
   loudness: LoudnessStats | null,
-  job: RenderJob
+  job: RenderJob,
+  manual: ManualCue[]
 ): Promise<AudioMixPlan | null> {
   const speechLufs = loudness && Number.isFinite(loudness.inputI) && loudness.inputI > -70 ? loudness.inputI : DEFAULT_SPEECH_LUFS
   // Same cues as the preview (clipSoundEffects), on the same timeline.
-  const sfx = clipSoundEffects(clip, timeline ?? new ClipTimeline([{ start: clip.edit.start, end: clip.edit.start + outputDuration }]), titleAt)
-  const musicPath = clip.edit.music && job.musicPath && existsSync(job.musicPath) ? job.musicPath : null
-  if (!sfx.length && !musicPath) return null
+  const sfx = job.source.hasAudio ? clipSoundEffects(clip, timeline ?? new ClipTimeline([{ start: clip.edit.start, end: clip.edit.start + outputDuration }]), titleAt) : []
+  const musicPath = job.source.hasAudio && clip.edit.music && job.musicPath && existsSync(job.musicPath) ? job.musicPath : null
+  if (!sfx.length && !musicPath && !manual.length) return null
   let musicGainDb = 0
   if (musicPath) {
     // Read the track's own loudness (its first minute is plenty) so quiet and
@@ -921,7 +927,7 @@ async function planAudioMix(
     const musicLufs = music && Number.isFinite(music.inputI) && music.inputI > -70 ? music.inputI : -14
     musicGainDb = Math.max(-40, Math.min(6, speechLufs + MUSIC_BED_LU - musicLufs))
   }
-  return { sfx, musicPath, musicGainDb, speechLufs }
+  return { sfx, musicPath, musicGainDb, speechLufs, manual }
 }
 
 export function renderClip(job: RenderJob): Promise<RenderResult> {
@@ -984,6 +990,9 @@ async function render(job: InternalRenderJob, cleanup: Array<() => void>): Promi
   const baseDuration = timeline ? timeline.outputDuration : duration
   const joins = outputJoins(clip, transcript).map(j => ({ ...j, time: j.time + (timeline?.coldOpenDuration ?? 0), baseTime: j.baseTime + (timeline?.coldOpenDuration ?? 0) }))
   const outputDuration = baseDuration - joins.reduce((sum, j) => sum + j.overlap, 0)
+  const manual = manualCuePlan(clip.edit.manualSoundEffects, job.soundLibrary ?? [], outputDuration)
+  if (manual.missing.length) throw new Error('Missing or damaged sound effect: ' + manual.missing.join(', ') +
+    '. Import the MP3 again and replace the placement, or mute it to export.')
   // Moments far apart are each opened with their own seek. One input reading
   // from the first to the last would decode everything between them too.
   const stretches = segments ? limitStretches(sourceStretches(clip.edit), MAX_SOURCE_INPUTS) : []
@@ -1153,9 +1162,7 @@ async function render(job: InternalRenderJob, cleanup: Array<() => void>): Promi
   }
 
   // Sound effects by rule and the music bed, mixed under the speech.
-  const audioMix = source.hasAudio
-    ? await planAudioMix(clip, timeline, baseDuration, titleText ? titleStart : null, loudness, job)
-    : null
+  const audioMix = await planAudioMix(clip, timeline, baseDuration, titleText ? titleStart : null, loudness, job, manual.cues)
 
   const tempDir = join(tmpdir(), 'cutawan')
   await mkdir(tempDir, { recursive: true })
@@ -1184,7 +1191,8 @@ async function render(job: InternalRenderJob, cleanup: Array<() => void>): Promi
     }
   )
   // The cold open is opened as one more source input, before the graph's own.
-  const graph = withDubMix(baseGraph, dub, (sources?.length ?? 1) + (coldOpen ? 1 : 0))
+  const sourceInputs = (sources?.length ?? 1) + (coldOpen ? 1 : 0)
+  const graph = withManualSounds(withDubMix(baseGraph, dub, sourceInputs), audioMix?.manual ?? [], outputDuration, sourceInputs)
   if (graph.focusCommands) await writeFile(focusCommandsPath, graph.focusCommands, 'utf8')
 
   // Whole-video renders can produce a filter graph far larger than a
@@ -1253,6 +1261,7 @@ async function render(job: InternalRenderJob, cleanup: Array<() => void>): Promi
     ...filterArgs,
     '-map', `[${videoLabel}]`,
     ...(graph.audioLabel ? ['-map', `[${graph.audioLabel}]`] : []),
+    ...(manual.cues.length ? ['-t', outputDuration.toFixed(6)] : []),
     ...opts.videoArgs,
     ...opts.audioCodec,
     ...opts.output

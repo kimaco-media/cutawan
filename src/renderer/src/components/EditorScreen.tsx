@@ -1,3 +1,5 @@
+import ManualSoundLane from './ManualSoundLane'
+import type { LibrarySound } from '@shared/manualSound'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Captions,
@@ -66,6 +68,17 @@ const ASPECTS: Array<{ value: AspectRatio; label: string }> = [
 export default function EditorScreen(): React.JSX.Element {
   const project = useStore((s) => s.project)
   const selectedClipId = useStore((s) => s.selectedClipId)
+  const projectId = project?.id
+  const [library, setLibrary] = useState<{ projectId: string; assets: LibrarySound[] } | null>(null)
+  const soundLibrary = library?.projectId === projectId ? library?.assets ?? [] : []
+  const [soundError, setSoundError] = useState('')
+  useEffect(() => {
+    let active = true
+    if (projectId) void window.cutawan.listSounds(projectId).then(assets => {
+      if (active) { setLibrary({ projectId, assets }); setSoundError('') }
+    }).catch(error => { if (active) setSoundError(String(error)) })
+    return () => { active = false }
+  }, [projectId])
   const updateClip = useStore((s) => s.updateClip)
   const updateClipLocal = useStore((s) => s.updateClipLocal)
   const exportClip = useStore((s) => s.exportClip)
@@ -193,7 +206,7 @@ export default function EditorScreen(): React.JSX.Element {
   return (
     <div className="flex h-full min-h-0">
       <div className="flex min-h-0 flex-1 flex-col p-6">
-        <PreviewPlayer project={project} clip={clip} />
+        <PreviewPlayer onSoundError={setSoundError} soundLibrary={soundLibrary} project={project} clip={clip} />
       </div>
 
       <aside className="flex w-[400px] shrink-0 flex-col gap-5 overflow-y-auto border-l border-surface-700 bg-surface-900 p-5">
@@ -239,6 +252,16 @@ export default function EditorScreen(): React.JSX.Element {
               void updateClip({ ...live, edit })
             }}
           />
+          <ManualSoundLane key={clip.id} placements={clip.edit.manualSoundEffects ?? []} library={soundLibrary} error={soundError}
+            onImport={async () => {
+              try {
+                const assets = await window.cutawan.importSound(project.id)
+                if (useStore.getState().project?.id === project.id) { setLibrary({ projectId: project.id, assets }); setSoundError('') }
+              } catch (error) { setSoundError(String(error)) }
+            }}
+            save={manualSoundEffects => {
+              void updateClip({ ...clip, edit: { ...clip.edit, manualSoundEffects } }, false).catch(error => setSoundError(String(error)))
+            }} />
           <div className="mt-3">
             <Toggle
               label="Tighten cuts — remove pauses and filler words"

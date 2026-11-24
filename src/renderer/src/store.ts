@@ -151,7 +151,7 @@ interface AppState {
   cancelAnalyze: () => Promise<void>
   openEditor: (clipId: string) => void
   closeEditor: () => void
-  updateClip: (clip: Clip) => Promise<void>
+  updateClip: (clip: Clip, checkFraming?: boolean) => Promise<void>
   /** Step the clip's own edits back or forward (see lib/editHistory.ts). */
   undo: (clipId: string) => Promise<void>
   redo: (clipId: string) => Promise<void>
@@ -460,7 +460,7 @@ export const useStore = create<AppState>((set, get) => ({
     })
   },
 
-  updateClip: async (clip) => {
+  updateClip: async (clip, checkFraming = true) => {
     const project = get().project
     if (!project) return
     // The stored copy is the last saved state (local edits during typing and
@@ -471,7 +471,7 @@ export const useStore = create<AppState>((set, get) => ({
     get().updateClipLocal(clip)
     if (recordSave(clip)) set({ historyVersion: get().historyVersion + 1 })
     await window.cutawan.updateClip(project.id, clip)
-    if (get().project?.id === project.id && get().selectedClipId === clip.id) {
+    if (checkFraming && get().project?.id === project.id && get().selectedClipId === clip.id) {
       await get().ensureReframe(clip.id)
     }
   },
