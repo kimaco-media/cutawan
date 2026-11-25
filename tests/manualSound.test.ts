@@ -19,6 +19,8 @@ it('places a reused MP3 on the finished timeline of a silent reordered video', a
     const assets: SoundAsset[] = []
     const persist = async (asset: SoundAsset) => { assets.push(asset) }
     const picked = join(root, 'impact.mp3')
+    await expect(importSound(dir, picked, persist)).rejects.toThrow(/Cannot read impact\.mp3.*select it again/)
+    expect(assets).toHaveLength(0)
     await writeFile(picked, 'bad audio')
     await expect(importSound(dir, picked, persist)).rejects.toThrow(/Could not import/)
     await runFfmpeg(['-f', 'lavfi', '-i', 'sine=f=440:d=1', '-c:a', 'libmp3lame', '-y', picked])

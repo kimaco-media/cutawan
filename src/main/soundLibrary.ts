@@ -31,14 +31,18 @@ async function digest(path: string): Promise<string> {
 
 /** Validate the managed copy before publishing its ID in the project. */
 export async function importSound(dir: string, picked: string, persist: (a: SoundAsset) => Promise<unknown>): Promise<void> {
-  const info = await stat(picked)
+  const info = await stat(picked).catch(cause => {
+    throw new Error(`Cannot read ${basename(picked)}. Check that the file still exists and you have permission to read it, then select it again.`, { cause })
+  })
   if (extname(picked).toLowerCase() !== '.mp3' || !info.isFile() || info.size > 32 * 1024 * 1024)
     throw new Error('Choose an MP3 audio file up to 32 MiB.')
   const id = randomUUID()
   await mkdir(dir, { recursive: true })
   const path = join(dir, id + '.mp3')
   try {
-    await copyFile(picked, path)
+    await copyFile(picked, path).catch(cause => {
+      throw new Error('Check that the MP3 is still readable and the project folder is writable, then try again.', { cause })
+    })
     const data = JSON.parse(await runBinary(FFPROBE_PATH, ['-v', 'error', '-protocol_whitelist', 'file', '-f', 'mp3', '-show_entries',
       'stream=codec_type,codec_name:format=duration', '-of', 'json', path]))
     const duration = Number(data.format?.duration)

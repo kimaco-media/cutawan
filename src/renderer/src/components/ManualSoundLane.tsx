@@ -50,8 +50,9 @@ export default function ManualSoundLane({ library, placements, onImport, save, e
         try { await onImport() } finally { setBusy(false) }
       }}>{busy ? 'Importing…' : 'Import sound effect (.mp3)'}</button>
       {sound && <>
-        <select aria-label="Sound library" value={sound.id} onChange={e => { setAssetId(e.target.value); setAuditionError(false) }}>
-          {library.map(a => <option key={a.id} value={a.id}>{a.name} · {a.duration.toFixed(2)} s{a.path ? '' : ' (missing)'}</option>)}
+        <select className="rounded border border-surface-600 bg-zinc-900 px-2 py-1 text-zinc-100 scheme-dark"
+          aria-label="Sound library" value={sound.id} onChange={e => { setAssetId(e.target.value); setAuditionError(false) }}>
+          {library.map(a => <option className="bg-zinc-900 text-zinc-100" key={a.id} value={a.id}>{a.name} · {a.duration.toFixed(2)} s{a.path ? '' : ' (missing)'}</option>)}
         </select>
         {sound.path && <audio key={sound.id} controls preload="metadata" aria-label="Audition sound effect"
           className="h-8 max-w-full" src={window.cutawan.mediaUrl(sound.path)} onError={() => setAuditionError(true)} />}
