@@ -71,6 +71,9 @@ const api = {
   ): Promise<Project> =>
     ipcRenderer.invoke('project:updateTranscriptWord', projectId, segmentId, wordIndex, text),
 
+  loopPreview: (projectId: string, clip: Clip, seconds: number, id: string, cachedPath?: string): Promise<{ path: string; seam: number; notice?: string }> =>
+    ipcRenderer.invoke('clip:loopPreview', projectId, clip, seconds, id, cachedPath),
+  cancelLoopPreview: (id: string): Promise<void> => ipcRenderer.invoke('clip:cancelLoopPreview', id),
   transitionPreview: (projectId: string, clip: Clip, fromId: string, toId: string): Promise<string> =>
     ipcRenderer.invoke('clip:transitionPreview', projectId, clip, fromId, toId),
   exportClip: (projectId: string, opts: ExportOptions): Promise<ExportResult> =>
@@ -165,6 +168,11 @@ const api = {
     const listener = (_e: Electron.IpcRendererEvent, e: BackgroundReframeEvent): void => cb(e)
     ipcRenderer.on('clip:backgroundReframe', listener)
     return () => ipcRenderer.removeListener('clip:backgroundReframe', listener)
+  },
+  onLoopProgress: (cb: (id: string, fraction: number) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, id: string, fraction: number): void => cb(id, fraction)
+    ipcRenderer.on('loop:progress', listener)
+    return () => ipcRenderer.removeListener('loop:progress', listener)
   },
   onExportProgress: (cb: (p: ExportProgress) => void): (() => void) => {
     const listener = (_e: Electron.IpcRendererEvent, p: ExportProgress): void => cb(p)

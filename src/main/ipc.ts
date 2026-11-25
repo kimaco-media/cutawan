@@ -33,6 +33,7 @@ import { captionWholeVideo } from './pipeline/wholeVideo'
 import { downloadGpuFfmpeg } from './pipeline/encoders'
 import { probeVideo } from './pipeline/ffmpeg'
 import { getTimeline } from './pipeline/timeline'
+import { renderLoopPreview } from './pipeline/loopPreview'
 import { renderTransitionPreview } from './pipeline/transitionPreview'
 import { renderClip } from './pipeline/render'
 import { ensureClipReframe, supersedeClipReframe } from './pipeline/reframe'
@@ -340,6 +341,40 @@ export function registerIpcHandlers(): void {
         delete clip.editorial
       }
     })
+  })
+
+  const loopJobs = new Map<string, AbortController>()
+  handle('clip:cancelLoopPreview', (event, id: string) => loopJobs.get(event.sender.id + '/' + id)?.abort())
+  handle('clip:loopPreview', async (event, projectId: string, clip: Clip, seconds: number, id: string, cachedPath?: string) => {
+    const key = event.sender.id + '/' + id
+    const controller = new AbortController()
+    loopJobs.set(key, controller)
+    const abort = (): void => controller.abort()
+    event.sender.once('destroyed', abort)
+    try {
+      const project = await loadProject(projectId)
+      const saved = project.clips.find(c => c.id === clip.id)
+      if (!saved) throw new Error('Clip not found')
+      if (project.sourceMissing) throw new Error('Relink the source video before previewing the loop.')
+      if (exportWaitsForReframe(clip) && needsReframe(clip)) throw new Error('Finish framing analysis before rendering the loop preview.')
+      // Project-owned file references come from persisted state, even for an unsaved timeline edit.
+      clip = { ...clip, broll: clip.broll.map(b => ({ ...b, imagePath: saved.broll.find(item => item.id === b.id)?.imagePath ?? null })),
+        dub: saved.dub && { ...saved.dub, enabled: Boolean(clip.dub?.enabled) } }
+      const prefs = getExportPreferences()
+      const ids = new Set(clip.edit.manualSoundEffects?.filter(s => s.enabled).map(s => s.assetId))
+      const soundLibrary = ids.size ? await readSoundLibrary(soundDirectory(projectsRoot(), projectId), project.soundAssets, ids) : []
+      for (const id of ids) if (!soundLibrary.some(s => s.id === id && s.path)) throw new Error('Relink the missing manual sound before rendering.')
+      const musicPath = await clipMusicPath(clip, getMusicFolder())
+      if (clip.edit.music && clip.edit.musicTrack && (!musicPath || basename(musicPath) !== clip.edit.musicTrack)) throw new Error('Selected music track is missing.')
+      return await renderLoopPreview({ clip, source: project.video, transcript: project.transcript, musicPath, soundLibrary,
+        branding: getBrandingSettings(), fontsDirPath: await renderFontsDir(), encoder: prefs.encoder, quality: prefs.quality,
+        onProgress: fraction => { if (!event.sender.isDestroyed()) event.sender.send('loop:progress', id, fraction) },
+        sizeTargetBytes: sizeTargetBytesFromMb(prefs.sizeTargetMb) }, seconds, join(app.getPath('userData'), 'timeline-cache', 'loops'),
+        app.getVersion(), controller.signal, cachedPath)
+    } finally {
+      loopJobs.delete(key)
+      event.sender.removeListener('destroyed', abort)
+    }
   })
 
   handle('clip:transitionPreview', async (_event, projectId: string, snapshot: Clip, fromId: string, toId: string) => {

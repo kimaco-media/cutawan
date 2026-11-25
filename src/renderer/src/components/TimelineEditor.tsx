@@ -9,6 +9,7 @@ import { allowsTransitionSpeechOverlap, outputJoins, playbackTimeMap, TRANSITION
 import { historyState } from '@shared/editHistory'
 import { usePreviewBus } from '../lib/previewBus'
 import { useStore } from '../store'
+import LoopPreview from './LoopPreview'
 import TransitionPreview from './TransitionPreview'
 import TrimBar, { type TimelineMark } from './TrimBar'
 
@@ -36,6 +37,8 @@ export default function TimelineEditor({ clip, scale, timelines, fps, onSave, on
   onLocal: (edit: Clip['edit']) => void
 }): React.JSX.Element {
   const project = useStore(s => s.project)
+  const fonts = useStore(s => s.customFonts)
+  const settings = useStore(s => s.settings)
   const branding = useStore(s => s.settings?.branding)
   const transcript = useStore((s) => s.project?.transcript ?? null)
   const undo = useStore((s) => s.undo)
@@ -273,6 +276,8 @@ export default function TimelineEditor({ clip, scale, timelines, fps, onSave, on
             onDragOver={e => { e.preventDefault(); setInsertion('end') }}
             onDrop={e => { e.preventDefault(); if (dragged) move(dragged, null) }}>Drop last</div>
         </div>
+        {project && <LoopPreview key={previewKey + JSON.stringify([settings?.quality, settings?.encoder, settings?.sizeTargetMb, settings?.musicFolder, fonts, project.sourceRevision, project.sourceMissing, project.soundAssets])}
+          projectId={project.id} clip={clip} />}
         {selectedPiece && project && <SegmentLayoutControls key={selectedPiece.id} piece={selectedPiece} clip={clip}
           source={project.video} position={map.mapRange(selectedPiece)[0]?.start ?? 0}
           onChange={layout => onSave({ ...edit, sequence: pieces.map(p => p.id === selectedId ? { ...p, layout } : p) })} />}

@@ -129,6 +129,15 @@ async function runSmokeCapture(win: BrowserWindow, dir: string): Promise<void> {
   await click('[data-testid="clip-thumb"]')
   await sleep(800)
   await shot('editor')
+  // The seeded clip has no configured join. Opening its loop controls must be cheap.
+  await click('[data-testid="loop-preview"] summary')
+  const loopReady = await win.webContents.executeJavaScript(`(() => {
+    const panel = document.querySelector('[data-testid="loop-preview"]')
+    return panel.open && panel.querySelector('select').value === '2' &&
+      panel.querySelector('button').textContent.includes('Render loop preview') && !panel.querySelector('video, progress')
+  })()`)
+  if (!loopReady) throw new Error('Missing on-demand loop preview controls')
+  await click('[data-testid="loop-preview"] summary')
   // Timeline editing with real key events: two razor splits, select the
   // middle piece, ripple-delete it, then undo.
   const key = async (keyCode: string, modifiers: Array<'meta' | 'control'> = []): Promise<void> => {
