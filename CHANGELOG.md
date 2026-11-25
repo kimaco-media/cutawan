@@ -10,6 +10,7 @@ still pre-1.0, minor bumps carry new features and patch bumps carry fixes.
 
 ### Added
 
+- Preview the loop in the clip editor. Play the last 1–5 seconds of the finished Short immediately followed by its opening, with the exported picture and audio mix.
 - Import local MP3s into the project sound library and place reusable, trimmable effects on the finished output timeline, including clips with silent source video.
 
 - **Gaming 9:16 layout** for Let's Play-style sources: an opt-in composition preset that stacks a facecam crop over a gameplay crop, both filling the frame edge to edge — cover crops instead of letterboxed insets, with no black bars and no reserved caption band. Two manually adjustable source regions (they may overlap, e.g. a corner facecam embedded in the gameplay), an adjustable 25/75, 30/70 or 35/65 split (30/70 default), per-panel focus so faces and gameplay stay in frame, and captions overlaying the gameplay. Available in the clip editor and the caption-whole-video flow without any AI analysis; the split and regions persist per clip. Existing automatic, content-first, stacked and content-only layouts are unchanged, and a small facecam that would be upscaled heavily gets a nonblocking softness warning.
