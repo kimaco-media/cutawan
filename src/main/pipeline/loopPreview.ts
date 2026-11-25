@@ -21,7 +21,7 @@ export async function renderLoopPreview(job: Inputs, seconds: number, root: stri
     const meta = await stat(path)
     return [path, meta.size, meta.mtimeMs]
   }))
-  const key = createHash('sha256').update(JSON.stringify([1, version, job, assets])).digest('hex')
+  const key = createHash('sha256').update(JSON.stringify([2, version, job, assets])).digest('hex')
   const dir = join(root, key)
   const path = join(dir, seconds + '.mp4')
   const marker = path + '.json'
