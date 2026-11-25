@@ -1,3 +1,4 @@
+import type { ManualCue } from '@shared/manualSound'
 import {
   MUSIC_BED_LU,
   SFX_SPECS,
@@ -78,6 +79,8 @@ function sameCues(a: SfxCue[], b: SfxCue[]): boolean {
 }
 
 export interface PreviewMix {
+  manual?: ManualCue[]
+  onManualError?: (id: string) => void
   cues: SfxCue[]
   /** media:// URL of the music track, or null. */
   musicUrl: string | null
@@ -100,6 +103,7 @@ export interface PreviewMix {
 export class PreviewAudio {
   private sources: AudioBufferSourceNode[] = []
   private music: HTMLAudioElement | null = null
+  private manualPlayers = new Map<string, HTMLAudioElement>()
   private musicUrl: string | null = null
   /** Output time last synced or ticked while playing; null when stopped. */
   private playingAt: number | null = null
@@ -113,18 +117,19 @@ export class PreviewAudio {
   update(mix: PreviewMix): void {
     const previous = this.mix
     this.mix = mix
-    const changed = previous.musicUrl !== mix.musicUrl || !sameCues(previous.cues, mix.cues)
+    const changed = JSON.stringify(previous.manual) !== JSON.stringify(mix.manual) || previous.musicUrl !== mix.musicUrl || !sameCues(previous.cues, mix.cues)
     if (changed && this.playingAt !== null) this.sync(this.playingAt)
   }
 
   get active(): boolean {
-    return this.mix.cues.length > 0 || this.mix.musicUrl !== null
+    return !!this.mix.manual?.length || this.mix.cues.length > 0 || this.mix.musicUrl !== null
   }
 
   sync(out: number): void {
     this.stop()
     this.playingAt = out
     if (!this.active) return
+    this.tickManual(out)
     if (this.mix.cues.length) {
       const ctx = audio()
       const now = ctx.currentTime + 0.02
@@ -144,10 +149,38 @@ export class PreviewAudio {
 
   /** Follow the ducking envelope; call on every preview frame while playing. */
   tick(out: number): void {
-    if (this.playingAt !== null) this.playingAt = out
+    if (this.playingAt !== null) {
+      this.playingAt = out
+      this.tickManual(out)
+    }
     if (this.music && !this.music.paused) {
       const bed = dbToGain(PREVIEW_SPEECH_LUFS + MUSIC_BED_LU - PREVIEW_MUSIC_LUFS)
       this.music.volume = Math.max(0, Math.min(1, bed * envelopeGain(this.mix.envelope, out)))
+    }
+  }
+
+  private tickManual(out: number): void {
+    for (const cue of this.mix.manual ?? []) {
+      const player = this.manualPlayers.get(cue.id)
+      if (out < cue.start || out >= cue.start + cue.duration) {
+        if (player) {
+          player.pause()
+          this.manualPlayers.delete(cue.id)
+        }
+      } else if (!player) {
+        const element = new Audio()
+        this.manualPlayers.set(cue.id, element)
+        element.volume = dbToGain(cue.gainDb)
+        element.onerror = () => {
+          if (this.manualPlayers.get(cue.id) === element) this.mix.onManualError?.(cue.id)
+        }
+        element.onloadedmetadata = () => {
+          if (this.manualPlayers.get(cue.id) !== element || this.playingAt === null) return
+          element.currentTime = cue.offset + Math.max(0, this.playingAt - cue.start)
+          void element.play().catch(() => {})
+        }
+        element.src = cue.path
+      }
     }
   }
 
@@ -184,6 +217,8 @@ export class PreviewAudio {
   }
 
   stop(): void {
+    for (const element of this.manualPlayers.values()) element.pause()
+    this.manualPlayers.clear()
     this.generation++
     this.playingAt = null
     this.pendingMetadata?.()

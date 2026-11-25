@@ -156,6 +156,7 @@ export interface FocusKeyframe {
 }
 
 export interface ClipEditState {
+  manualSoundEffects?: import('./manualSound').SoundPlacement[]
   aspect: AspectRatio
   reframeMode: ReframeMode
   framing: FramingMode
@@ -434,6 +435,7 @@ export interface LayoutShot {
 }
 
 export interface Project {
+  soundAssets?: import('./manualSound').SoundAsset[]
   /** Increments on relink so in-flight analysis of an older source cannot land. */
   sourceRevision?: number
   id: string

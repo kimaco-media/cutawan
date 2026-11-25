@@ -12,6 +12,8 @@ const pending = new Map<string, Promise<string>>()
 export async function renderTransitionPreview(project: Project, clip: Clip, fromId: string, toId: string,
   cacheDir: string, branding: BrandingSettings, fontsDirPath: string): Promise<string> {
   if (clip.edit.autoZoom) throw new Error('Turn off Auto zoom before rendering a join preview; its full-clip plan cannot be reproduced in a short excerpt.')
+  // The live transport plays the manual output lane separately over the bounded join.
+  clip = { ...clip, edit: { ...clip.edit, manualSoundEffects: undefined } }
   const boundary = outputJoins(clip, project.transcript).find(j => j.fromId === fromId && j.toId === toId)
   if (!boundary || !boundary.duration) throw new Error('Choose a valid transition first.')
   const sourceStat = await stat(project.video.path)

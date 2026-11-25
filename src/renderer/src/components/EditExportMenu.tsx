@@ -53,7 +53,7 @@ export default function EditExportMenu({ clipId }: { clipId: string }): React.JS
           </div>
           <p className="mt-2 text-[10px] leading-relaxed text-zinc-500">
             Writes the cuts (pauses removed, your cuts applied) as a timeline that uses the original
-            video, with captions as an .srt file. Reframing, zoom, B-roll and burned-in caption
+            video, with captions as an .srt file. Imported sound effects are included only in video exports. Reframing, zoom, B-roll and burned-in caption
             styling are not carried over.
           </p>
           {entry?.status === 'done' && entry.outputPath && (

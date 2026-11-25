@@ -106,3 +106,23 @@ describe('preview music and effects', () => {
     expect(FakeContext.started).toBe(2)
   })
 })
+
+it('seeks overlapping imported sounds independently and cancels pending starts on pause', () => {
+  const cue = { id: 'one', path: 'media://impact.mp3', start: 2, duration: 1, offset: .2, gainDb: -6 }
+  const player = new PreviewAudio(music({ musicUrl: null, manual: [cue, { ...cue, id: 'two', start: 2.2 }] }))
+  player.sync(2.5)
+  const [a, b] = FakeAudio.made as Array<FakeAudio & { onloadedmetadata(): void }>
+  a.onloadedmetadata()
+  b.onloadedmetadata()
+  expect(a.currentTime).toBeCloseTo(.7)
+  expect(b.currentTime).toBeCloseTo(.5)
+  expect(a.volume).toBeCloseTo(.5, 2)
+  player.tick(3.1)
+  expect(a.paused).toBe(true)
+  expect(b.paused).toBe(false)
+  player.sync(2.1)
+  const pending = FakeAudio.made.at(-1) as FakeAudio & { onloadedmetadata(): void }
+  player.stop()
+  pending.onloadedmetadata()
+  expect(pending.plays).toBe(0)
+})
